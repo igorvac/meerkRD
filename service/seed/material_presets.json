@@ -1,0 +1,56 @@
+[
+  {
+    "id": "mdf-3mm",
+    "name": "MDF 3 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 12, "power_pct": 65, "passes": 1, "kerf_mm": 0.15},
+      "engrave": {"speed_mm_s": 200, "power_pct": 20, "passes": 1},
+      "raster": {"speed_mm_s": 300, "power_pct": 25, "dpi": 254}
+    }
+  },
+  {
+    "id": "mdf-6mm",
+    "name": "MDF 6 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 6, "power_pct": 75, "passes": 1, "kerf_mm": 0.2},
+      "engrave": {"speed_mm_s": 200, "power_pct": 22, "passes": 1},
+      "raster": {"speed_mm_s": 300, "power_pct": 28, "dpi": 254}
+    }
+  },
+  {
+    "id": "acrilico-3mm",
+    "name": "Acrílico 3 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 8, "power_pct": 70, "passes": 1, "kerf_mm": 0.1},
+      "engrave": {"speed_mm_s": 250, "power_pct": 18, "passes": 1},
+      "raster": {"speed_mm_s": 350, "power_pct": 20, "dpi": 300}
+    }
+  },
+  {
+    "id": "compensado-6mm",
+    "name": "Compensado 6 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 7, "power_pct": 75, "passes": 1, "kerf_mm": 0.2},
+      "engrave": {"speed_mm_s": 200, "power_pct": 25, "passes": 1},
+      "raster": {"speed_mm_s": 300, "power_pct": 30, "dpi": 254}
+    }
+  },
+  {
+    "id": "papelao-2mm",
+    "name": "Papelão 2 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 25, "power_pct": 35, "passes": 1, "kerf_mm": 0.1},
+      "engrave": {"speed_mm_s": 250, "power_pct": 12, "passes": 1},
+      "raster": {"speed_mm_s": 350, "power_pct": 15, "dpi": 200}
+    }
+  },
+  {
+    "id": "couro-2mm",
+    "name": "Couro 2 mm",
+    "settings": {
+      "cut": {"speed_mm_s": 15, "power_pct": 45, "passes": 1, "kerf_mm": 0.1},
+      "engrave": {"speed_mm_s": 200, "power_pct": 18, "passes": 1},
+      "raster": {"speed_mm_s": 300, "power_pct": 20, "dpi": 254}
+    }
+  }
+]

@@ -167,7 +167,7 @@ class DXFProcessor:
             if entity.dxf.layer in dxf.layers:
                 s_layer = entity.dxf.layer
             else:
-                s_layer = ""
+                s_layer = entity.dxf.layer or ""
             assign_type = ""
             if "ENGRAVE" in s_layer.upper() or "ENGRAVE" in entity.dxf.layer.upper():
                 assign_type = "op engrave"

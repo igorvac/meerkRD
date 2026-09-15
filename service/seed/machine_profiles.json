@@ -1,0 +1,44 @@
+[
+  {
+    "id": "ruida-900x600",
+    "name": "CO2 90 × 60 cm (Ruida)",
+    "driver": "ruida-beta",
+    "bed_mm": [900, 600],
+    "home_corner": "top-left",
+    "flip_x": false,
+    "flip_y": false,
+    "swap_xy": false,
+    "magic": 136,
+    "max_speed_mm_s": 500,
+    "min_power_pct": 10,
+    "notes": "RDC6442/6445 com origem no canto superior esquerdo."
+  },
+  {
+    "id": "ruida-1300x900",
+    "name": "CO2 130 × 90 cm (Ruida)",
+    "driver": "ruida-beta",
+    "bed_mm": [1300, 900],
+    "home_corner": "top-left",
+    "flip_x": false,
+    "flip_y": false,
+    "swap_xy": false,
+    "magic": 136,
+    "max_speed_mm_s": 600,
+    "min_power_pct": 10,
+    "notes": ""
+  },
+  {
+    "id": "ruida-600x400",
+    "name": "CO2 60 × 40 cm (Ruida)",
+    "driver": "ruida-beta",
+    "bed_mm": [600, 400],
+    "home_corner": "top-left",
+    "flip_x": false,
+    "flip_y": false,
+    "swap_xy": false,
+    "magic": 136,
+    "max_speed_mm_s": 400,
+    "min_power_pct": 10,
+    "notes": ""
+  }
+]

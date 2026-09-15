@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Laser RD — gerar arquivo de corte</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="header">
+      <div class="brand" id="brand"><span id="brand-icon"></span> Laser RD</div>
+      <nav class="steps" aria-label="Etapas">
+        <button class="step" data-step="1" id="step-1"><span class="num">1</span> Máquina e arquivo</button>
+        <button class="step" data-step="2" id="step-2"><span class="num">2</span> Operações</button>
+        <button class="step" data-step="3" id="step-3"><span class="num">3</span> Resultado</button>
+      </nav>
+      <div class="spacer"></div>
+      <div class="status-pill" id="status-pill" aria-live="polite"><span class="dot"></span><span id="status-text">Pronto</span></div>
+      <button class="btn ghost icon-only" id="theme-toggle" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
+    </header>
+
+    <main class="canvas dropzone" id="canvas">
+      <div class="bed-wrap" id="bed-wrap" hidden>
+        <div class="bed-grid" id="bed-grid"></div>
+        <div class="layer preview" id="layer-preview"></div>
+        <div class="layer path" id="layer-path" data-travel="on"></div>
+        <div class="bed-label" id="bed-label"></div>
+        <span class="origin-marker" id="origin-marker" title="Origem da máquina"></span>
+      </div>
+      <div class="canvas-badges" id="canvas-badges"></div>
+      <div class="canvas-nav" id="canvas-nav" hidden>
+        <button class="btn ghost icon-only" id="nav-fit" title="Ajustar mesa à tela"></button>
+        <button class="btn ghost icon-only active" id="nav-grid" title="Mostrar grade"></button>
+        <button class="btn ghost icon-only" id="nav-path" title="Mostrar percurso do laser" disabled></button>
+        <button class="btn ghost icon-only active" id="nav-travel" title="Mostrar deslocamentos" disabled></button>
+      </div>
+      <div class="empty-state" id="empty-state">
+        <div class="empty-card">
+          <span id="empty-icon"></span>
+          <h1>Envie o desenho para começar</h1>
+          <p class="muted">DXF, SVG ou LightBurn. Layers chamados <strong>CUT</strong>, <strong>ENGRAVE</strong> ou <strong>RASTER</strong> viram operações automaticamente; os demais são separados por cor.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <button class="btn primary lg" id="btn-upload">Escolher arquivo</button>
+            <button class="btn lg" id="btn-example" title="Carrega uma peça de exemplo com três layers">Usar exemplo</button>
+          </div>
+          <p class="small muted">Arraste e solte o arquivo aqui também.</p>
+        </div>
+      </div>
+      <input type="file" id="file-input" accept=".dxf,.svg,.svgz,.lbrn,.lbrn2,.xcs,.png,.jpg,.jpeg,.bmp" hidden />
+    </main>
+
+    <aside class="inspector" id="inspector">
+      <section class="section" id="sec-machine">
+        <div class="section-head"><h2>Máquina</h2></div>
+        <div class="field">
+          <label for="profile-select">Perfil da máquina</label>
+          <select class="control" id="profile-select"></select>
+          <span class="hint" id="profile-hint"></span>
+        </div>
+      </section>
+
+      <section class="section" id="sec-file">
+        <div class="section-head"><h2>Arquivo</h2><button class="btn sm ghost" id="btn-change-file">Trocar</button></div>
+        <div id="file-summary" class="muted">Nenhum arquivo enviado.</div>
+      </section>
+
+      <section class="section" id="sec-ops" hidden>
+        <div class="section-head">
+          <h2>Operações</h2>
+          <select class="control" id="preset-select" style="width:auto;height:28px;padding:0 8px" title="Aplicar preset de material">
+            <option value="">Aplicar preset de material…</option>
+          </select>
+        </div>
+        <p class="small muted">Ordem de execução de cima para baixo. Clique numa operação para editar.</p>
+        <div class="op-list" id="op-list"></div>
+        <details id="opt-details">
+          <summary><span id="opt-chev"></span> Otimização do percurso</summary>
+          <div style="display:flex;flex-direction:column;gap:8px;padding-top:8px">
+            <label class="toggle"><input type="checkbox" id="opt-enabled" checked /> Otimizar ordem de corte</label>
+            <label class="toggle"><input type="checkbox" id="opt-inner" checked /> Cortar peças internas primeiro</label>
+            <label class="toggle"><input type="checkbox" id="opt-travel" checked /> Reduzir deslocamento em vazio</label>
+          </div>
+        </details>
+      </section>
+
+      <section class="section" id="sec-result" hidden>
+        <div class="section-head"><h2>Resultado</h2></div>
+        <div id="result-body"></div>
+      </section>
+
+      <section class="section" id="sec-history">
+        <div class="section-head"><h2>Trabalhos recentes</h2></div>
+        <div class="history" id="history"></div>
+      </section>
+    </aside>
+
+    <footer class="jobbar" id="jobbar">
+      <div class="progress" id="progress"></div>
+      <div class="warnings" id="jobbar-warnings"></div>
+      <div class="estimate" id="jobbar-estimate" hidden><span class="value" id="estimate-value">—</span><span class="muted small">tempo estimado</span></div>
+      <div class="actions">
+        <button class="btn primary lg" id="btn-generate" disabled>Gerar arquivo</button>
+        <button class="btn lg" id="btn-download" disabled>Baixar .rd</button>
+      </div>
+    </footer>
+  </div>
+  <div id="toast-root"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

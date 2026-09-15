@@ -154,3 +154,7 @@ release_preview.md
 build-dir/
 flatpak-repo/
 *.flatpak
+
+# RD service runtime data
+service/data/
+.DS_Store
