@@ -604,22 +604,34 @@ class RuidaDevice(Service, Status):
         def ruida_save(channel, _, filename, magic, data=None, **kwargs):
             if filename is None:
                 raise CommandSyntaxError
+            if magic == -1:
+                magic = self.magic
+            driver = RuidaDriver(self)
+            job = LaserJob(filename, list(data.plan), driver=driver)
+            rdjob = driver.controller.job
+            rdjob.set_magic(magic)
+
+            # The controller streams the recorded job from a background thread
+            # and the transport layer swizzles on the way out. Neither is wanted
+            # here: swallow the stream and dump the recorded buffer ourselves.
+            driver.controller.write = lambda _data: None
+
+            driver.job_start(job)
+            job.execute()
+            driver.job_finish(job)
+
+            contents = rdjob.swizzle(rdjob.get_contents())
             try:
                 with open(filename, "wb") as f:
-                    if magic == -1:
-                        magic = self.magic
-                    driver = RuidaDriver(self)
-                    job = LaserJob(filename, list(data.plan), driver=driver)
-
-                    driver.controller.write = f.write
-                    driver.controller.job.set_magic(magic)
-
-                    driver.job_start(job)
-                    job.execute()
-                    driver.job_finish(job)
-
+                    f.write(contents)
             except (PermissionError, OSError):
                 channel(_("Could not save: {filename}").format(filename=filename))
+                return
+            channel(
+                _("Saved {filename} ({size} bytes, magic 0x{magic:02X})").format(
+                    filename=filename, size=len(contents), magic=magic
+                )
+            )
 
     @property
     def safe_label(self):
