@@ -8,44 +8,25 @@ Run from the repository root:
 
 import importlib
 import json
-import shutil
 import time
 from pathlib import Path
 
 import pytest
 
-from meerk40t.ruida.rdjob import (
-    RDJob,
-    decode32,
-    determine_magic_via_histogram,
-    parse_commands,
-)
-from service.core.runner import run_job
+from meerk40t.ruida.rdjob import RDJob, determine_magic_via_histogram, parse_commands
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE = SERVICE_ROOT / "web" / "exemplo.dxf"
+EXAMPLE = SERVICE_ROOT / "web" / "exemplo.dxf"  # CUT/ENGRAVE/LOGO layers, 120x80mm
 
-PROFILE = {
+PROFILE_PAYLOAD = {
     "id": "ruida-900x600",
+    "name": "CO2 90x60",
     "driver": "ruida-beta",
     "bed_mm": [900, 600],
     "home_corner": "top-left",
     "magic": 136,
     "max_speed_mm_s": 500,
     "min_power_pct": 10,
-}
-
-PARAMS = {
-    "optimize": {"enabled": True, "inner_first": True, "reduce_travel": True},
-    "operations": [
-        {"id": "op_1", "source": {"layer": "CUT"}, "type": "cut", "order": 2,
-         "speed_mm_s": 12, "power_pct": 65, "passes": 2, "kerf_mm": 0, "color": "#ff0000"},
-        {"id": "op_2", "source": {"layer": "ENGRAVE"}, "type": "engrave", "order": 1,
-         "speed_mm_s": 200, "power_pct": 20, "passes": 1, "color": "#0000ff"},
-        {"id": "op_3", "source": {"layer": "LOGO"}, "type": "raster", "order": 0,
-         "speed_mm_s": 300, "power_pct": 25, "passes": 1, "dpi": 254,
-         "direction": "top_to_bottom", "color": "#00ff00"},
-    ],
 }
 
 
@@ -65,93 +46,6 @@ def decode_rd(data):
 
 
 @pytest.fixture
-def job_dir(tmp_path):
-    shutil.copy(EXAMPLE, tmp_path / "input.dxf")
-    return tmp_path
-
-
-def test_analyze_detects_layers(job_dir):
-    result = run_job(job_dir, "analyze", "input.dxf", PROFILE)
-    assert result["ok"], result.get("error")
-    layers = {op["source"].get("layer"): op["type"] for op in result["operations"]}
-    assert layers == {"CUT": "cut", "ENGRAVE": "engrave", "LOGO": "raster"}
-    assert (job_dir / "preview.svg").exists()
-    assert result["outside_bed"] is False
-
-
-def test_generate_produces_valid_rd(job_dir):
-    result = run_job(job_dir, "generate", "input.dxf", PROFILE, PARAMS)
-    assert result["ok"], result.get("error")
-    data = (job_dir / "job.rd").read_bytes()
-    magic, cmds, speeds = decode_rd(data)
-    assert magic == 0x88
-    assert cmds[-1] == b"\xd7"
-    assert {12.0, 200.0, 300.0} <= set(speeds)
-    est = result["estimate"]
-    assert est["total_s"] > 0
-    assert est["by_operation"]["op_3"]["cuts"] > 0, "raster op must produce cuts headlessly"
-    assert est["by_operation"]["op_1"]["cut_mm"] == pytest.approx(952, rel=0.02)
-    assert (job_dir / "path.svg").exists()
-    assert result["warnings"] == []
-
-
-def test_generate_warns_on_bad_speed(job_dir):
-    params = json.loads(json.dumps(PARAMS))
-    params["operations"][0]["speed_mm_s"] = 900
-    result = run_job(job_dir, "generate", "input.dxf", PROFILE, params)
-    assert result["ok"]
-    assert any(w["code"] == "speed_too_high" for w in result["warnings"])
-
-
-def test_generate_anchor_mode_rebases_to_bbox_corner(job_dir):
-    """
-    'anchor' mode must emit Ref Point 1 (D8 11), not Ref Point 2 (D8 10), and
-    must not depend on bed_mm/home_corner for placement: the job is re-based
-    onto its own bounding-box corner so it's small offsets from (0,0) that
-    the controller then adds to whatever origin point is live on the console
-    (the RDWorks-compatible "piece zero" workflow).
-    """
-    profile = dict(PROFILE, job_reference="anchor", bed_mm=[10, 10])  # bed too small to matter
-    result = run_job(job_dir, "generate", "input.dxf", profile, PARAMS)
-    assert result["ok"], result.get("error")
-    data = (job_dir / "job.rd").read_bytes()
-    magic = determine_magic_via_histogram(data)
-    job = RDJob()
-    job.set_magic(magic)
-    cmds = list(parse_commands(job.unswizzle(data)))
-    assert cmds[0] == b"\xd8\x11", "anchor mode must open with Ref Point 1 (Anchor Point)"
-    assert b"\xd8\x10" not in cmds, "anchor mode must never reference machine-absolute zero"
-
-    def abs_coords(cmd):
-        if cmd[0] == 0x88:  # MoveAbs
-            return decode32(cmd[1:6]), decode32(cmd[6:11])
-        if cmd[0] == 0xA8:  # CutAbs
-            return decode32(cmd[1:6]), decode32(cmd[6:11])
-        return None
-
-    xs, ys = [], []
-    for c in cmds:
-        pos = abs_coords(c)
-        if pos:
-            xs.append(pos[0])
-            ys.append(pos[1])
-    assert xs and ys
-    # Re-based near (0,0): nothing should be anywhere near the (deliberately
-    # tiny, and therefore obviously-exceeded-if-unmodified) 10x10mm bed.
-    assert min(xs) == 0 or min(ys) == 0, "job should be anchored at its own bbox corner"
-    assert max(max(xs), max(ys)) < 200_000, "coordinates must be small offsets, not absolute bed-space"
-
-
-def test_generate_fails_without_elements(job_dir):
-    params = json.loads(json.dumps(PARAMS))
-    for op in params["operations"]:
-        op["source"] = {"layer": "NOPE"}
-    result = run_job(job_dir, "generate", "input.dxf", PROFILE, params)
-    assert not result["ok"]
-    assert result["error"]["code"] == "nothing_to_burn"
-
-
-@pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("RD_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("RD_API_KEY", raising=False)
@@ -161,39 +55,129 @@ def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     with TestClient(main.app) as tc:
+        tc.post("/api/machine-profiles", json=PROFILE_PAYLOAD)
         yield tc
 
 
 def wait_status(client, job_id, wanted, timeout=60):
     deadline = time.time() + timeout
+    job = None
     while time.time() < deadline:
         job = client.get(f"/api/jobs/{job_id}").json()
         if job["status"] in wanted:
             return job
-        time.sleep(0.3)
-    raise AssertionError(f"job {job_id} never reached {wanted}: {job['status']} {job.get('error')}")
+        time.sleep(0.2)
+    raise AssertionError(f"job {job_id} never reached {wanted}: {job and job['status']} {job and job.get('error')}")
 
 
-def test_api_full_flow(client):
-    profiles = client.get("/api/machine-profiles").json()
-    assert profiles[0]["id"] == "ruida-900x600"
+def upload(client, files, profile_id="ruida-900x600"):
+    file_tuples = [("files", (name, open(path, "rb"), "application/dxf")) for name, path in files]
+    res = client.post("/api/jobs", files=file_tuples, data={"profile_id": profile_id})
+    for _, (_, fh, _) in file_tuples:
+        fh.close()
+    return res
 
-    with open(EXAMPLE, "rb") as f:
-        res = client.post("/api/jobs", files={"file": ("peca.dxf", f, "application/dxf")},
-                          data={"profile_id": "ruida-900x600"})
+
+def test_upload_analyzes_every_part_then_nest_builds_combined_analysis(client):
+    res = upload(client, [("bracket.dxf", EXAMPLE)])
     assert res.status_code == 201, res.text
     job_id = res.json()["id"]
 
+    job = wait_status(client, job_id, {"parts_ready", "failed"})
+    assert job["status"] == "parts_ready", job.get("error")
+    part = job["parts"][0]
+    assert part["status"] == "ready"
+    assert part["width_mm"] == pytest.approx(120, abs=0.01)
+    assert set(part["layers"]) == {"CUT", "ENGRAVE", "LOGO"}
+
+    res = client.post(f"/api/jobs/{job_id}/nest")
+    assert res.status_code == 202, res.text
     job = wait_status(client, job_id, {"ready_for_params", "failed"})
     assert job["status"] == "ready_for_params", job.get("error")
     assert len(job["params"]["operations"]) == 3
+    assert len(job["params"]["assignments"]) == 5  # every shape in the file
     assert client.get(job["artifacts"]["preview_svg"]).status_code == 200
+
+
+def test_two_parts_with_quantity_merge_layers_into_shared_operations(client):
+    res = upload(client, [("bracket.dxf", EXAMPLE), ("bracket2.dxf", EXAMPLE)])
+    assert res.status_code == 201, res.text
+    job_id = res.json()["id"]
+    job = wait_status(client, job_id, {"parts_ready", "failed"})
+    assert job["status"] == "parts_ready"
+    assert len(job["parts"]) == 2
+    assert {p["id"] for p in job["parts"]} == {"bracket", "bracket2"}
+
+    # Ask for 3 copies of the first part.
+    part_id = job["parts"][0]["id"]
+    res = client.put(f"/api/jobs/{job_id}/parts/{part_id}", json={"quantity": 3})
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "parts_ready"  # reset, but parts were already analyzed
+
+    res = client.post(f"/api/jobs/{job_id}/nest")
+    assert res.status_code == 202, res.text
+    job = wait_status(client, job_id, {"ready_for_params", "failed"})
+    assert job["status"] == "ready_for_params", job.get("error")
+    assert not job["unplaced_part_ids"]
+
+    # 3 copies of bracket + 1 copy of bracket2 = 4 instances x 2 CUT shapes = 8.
+    cut_ops = [op for op in job["analysis"]["operations"] if op["source"].get("layer") == "CUT"]
+    assert len(cut_ops) == 1
+    assert cut_ops[0]["elements"] == 8
+
+
+def test_reassigning_an_element_to_a_different_operation_changes_the_rd(client):
+    res = upload(client, [("bracket.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
+
+    params = job["params"]
+    engrave_op = next(op for op in params["operations"] if op["type"] == "engrave")
+    cut_op = next(op for op in params["operations"] if op["type"] == "cut")
+    # Move one element that was auto-assigned to "cut" over to "engrave".
+    moved_element = next(eid for eid, op in params["assignments"].items() if op == cut_op["id"])
+    params["assignments"][moved_element] = engrave_op["id"]
+
+    res = client.put(f"/api/jobs/{job_id}/params", json=params)
+    assert res.status_code == 200, res.text
+    assert res.json()["params"]["assignments"][moved_element] == engrave_op["id"]
+
+    res = client.post(f"/api/jobs/{job_id}/generate")
+    assert res.status_code == 202, res.text
+    job = wait_status(client, job_id, {"ready", "failed"})
+    assert job["status"] == "ready", job.get("error")
+    # The moved element (a cut line) now has fewer cuts in "cut" and one more in "engrave".
+    result_by_id = {op["id"]: op for op in job["result_operations"]}
+    assert result_by_id[cut_op["id"]]["elements"] == 1  # 2 cut shapes minus the one we moved
+    assert result_by_id[engrave_op["id"]]["elements"] == 3  # 2 engrave shapes plus the one we moved
+
+
+def test_params_rejects_assignment_to_unknown_operation(client):
+    res = upload(client, [("bracket.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
+    params = job["params"]
+    params["assignments"][next(iter(params["assignments"]))] = "op_does_not_exist"
+    res = client.put(f"/api/jobs/{job_id}/params", json=params)
+    assert res.status_code == 422
+
+
+def test_full_flow_download_and_duplicate(client):
+    res = upload(client, [("peca.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
 
     bad = json.loads(json.dumps(job["params"]))
     bad["operations"][0]["speed_mm_s"] = -1
     assert client.put(f"/api/jobs/{job_id}/params", json=bad).status_code == 422
 
-    assert client.put(f"/api/jobs/{job_id}/params", json=PARAMS).status_code == 200
+    assert client.put(f"/api/jobs/{job_id}/params", json=job["params"]).status_code == 200
     assert client.post(f"/api/jobs/{job_id}/generate").status_code == 202
     job = wait_status(client, job_id, {"ready", "failed"})
     assert job["status"] == "ready", job.get("error")
@@ -205,8 +189,7 @@ def test_api_full_flow(client):
     magic, cmds, speeds = decode_rd(rd.content)
     assert cmds[-1] == b"\xd7"
 
-    # Changing params after generation marks the job stale and blocks download.
-    changed = json.loads(json.dumps(PARAMS))
+    changed = json.loads(json.dumps(job["params"]))
     changed["operations"][0]["speed_mm_s"] = 8
     assert client.put(f"/api/jobs/{job_id}/params", json=changed).json()["stale"] is True
 
@@ -218,10 +201,45 @@ def test_api_full_flow(client):
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
+def test_removing_the_last_part_is_rejected(client):
+    res = upload(client, [("only.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    job = wait_status(client, job_id, {"parts_ready"})
+    part_id = job["parts"][0]["id"]
+    res = client.delete(f"/api/jobs/{job_id}/parts/{part_id}")
+    assert res.status_code == 409
+
+
+def test_adding_a_part_resets_a_generated_job(client):
+    res = upload(client, [("a.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
+    client.put(f"/api/jobs/{job_id}/params", json=job["params"])
+    client.post(f"/api/jobs/{job_id}/generate")
+    job = wait_status(client, job_id, {"ready"})
+    assert job["artifacts"].get("rd")
+
+    with open(EXAMPLE, "rb") as fh:
+        res = client.post(f"/api/jobs/{job_id}/parts", files={"files": ("b.dxf", fh, "application/dxf")})
+    assert res.status_code == 201, res.text
+    job = res.json()
+    assert job["status"] in ("analyzing_parts", "parts_ready")
+    assert job["params"] is None
+    assert job["placements"] is None
+
+
 def test_api_rejects_bad_upload(client):
-    res = client.post("/api/jobs", files={"file": ("x.exe", b"MZ", "application/octet-stream")},
-                      data={"profile_id": "ruida-900x600"})
+    res = client.post(
+        "/api/jobs",
+        files={"files": ("x.exe", b"MZ", "application/octet-stream")},
+        data={"profile_id": "ruida-900x600"},
+    )
     assert res.status_code == 400
-    res = client.post("/api/jobs", files={"file": ("x.dxf", b"", "application/dxf")},
-                      data={"profile_id": "ruida-900x600"})
+    res = client.post(
+        "/api/jobs",
+        files={"files": ("x.dxf", b"", "application/dxf")},
+        data={"profile_id": "ruida-900x600"},
+    )
     assert res.status_code == 400

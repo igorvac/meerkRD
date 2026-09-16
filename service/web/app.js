@@ -10,6 +10,7 @@ const state = {
   jobs: [],
   step: 1,
   expanded: new Set(),
+  selected: new Set(),
   showPath: false,
   showTravel: true,
   showGrid: true,
@@ -17,6 +18,9 @@ const state = {
   saveTimer: null,
   pollTimer: null,
 };
+
+const BUSY_STATUSES = new Set(["analyzing_parts", "nesting", "generating"]);
+const PART_STATUS_LABEL = { analyzing: "Analisando…", ready: "Pronta", failed: "Falhou" };
 
 const $ = (id) => document.getElementById(id);
 const OP_LABELS = { cut: "Corte", engrave: "Gravação vetorial", raster: "Gravação raster", image: "Imagem" };
@@ -206,20 +210,65 @@ function readMachineForm() {
   };
 }
 
-function renderFile() {
+function renderParts() {
   const job = state.job;
-  const box = $("file-summary");
-  $("btn-change-file").hidden = !job;
-  if (!job) { box.innerHTML = `<span class="muted">Nenhum arquivo enviado.</span>`; return; }
-  const a = job.analysis;
-  const chips = [];
-  if (a) {
-    chips.push(`<span class="chip">${a.elements.length} elemento(s)</span>`);
-    if (a.bbox_mm) chips.push(`<span class="chip">${Math.round(a.bbox_mm[2] - a.bbox_mm[0])} × ${Math.round(a.bbox_mm[3] - a.bbox_mm[1])} mm</span>`);
-    chips.push(a.outside_bed ? `<span class="chip danger">${icon("critical")} fora da mesa</span>` : `<span class="chip ok">${icon("ok")} cabe na mesa</span>`);
-  } else if (job.status === "analyzing") chips.push(`<span class="chip info">analisando…</span>`);
-  else if (job.status === "failed") chips.push(`<span class="chip danger">falhou</span>`);
-  box.innerHTML = `<div style="display:flex;align-items:center;gap:8px">${icon("file")}<strong style="overflow:hidden;text-overflow:ellipsis">${esc(job.name)}</strong></div><div class="op-summary" style="margin-top:6px">${chips.join("")}</div>`;
+  const list = $("parts-list");
+  const empty = $("parts-empty");
+  const addBtn = $("btn-add-part");
+  const nestBox = $("nest-box");
+  if (!job) {
+    list.innerHTML = "";
+    empty.hidden = false;
+    addBtn.hidden = true;
+    nestBox.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  addBtn.hidden = BUSY_STATUSES.has(job.status);
+  const unplaced = new Set(job.unplaced_part_ids || []);
+  list.innerHTML = job.parts
+    .map((p) => {
+      const chips = [];
+      if (p.status === "analyzing") chips.push(`<span class="chip info">${PART_STATUS_LABEL.analyzing}</span>`);
+      else if (p.status === "failed") chips.push(`<span class="chip danger">${icon("critical")} ${esc(p.error?.message || "falhou")}</span>`);
+      else {
+        chips.push(`<span class="chip">${Math.round(p.width_mm)} × ${Math.round(p.height_mm)} mm</span>`);
+        if (p.layers?.length) chips.push(`<span class="chip">${p.layers.map(esc).join(", ")}</span>`);
+        chips.push(`<span class="chip">${p.elements ?? "?"} elem.</span>`);
+      }
+      if (unplaced.has(p.id)) chips.push(`<span class="chip danger">${icon("critical")} não coube na mesa</span>`);
+      return `<div class="part-card${p.enabled ? "" : " disabled"}${unplaced.has(p.id) ? " unplaced" : ""}" data-part="${p.id}">
+        <div class="part-head">
+          ${icon("file")}
+          <span class="part-name" title="${esc(p.name)}">${esc(p.name)}</span>
+          <button class="btn sm ghost icon-only" data-toggle-part="${p.id}" title="${p.enabled ? "Desativar peça" : "Ativar peça"}">${icon(p.enabled ? "eye" : "eyeOff")}</button>
+          <button class="btn sm ghost icon-only" data-remove-part="${p.id}" title="Remover peça">${icon("trash")}</button>
+        </div>
+        <div class="part-summary">${chips.join("")}</div>
+        ${p.status === "ready" ? `<div class="part-row">
+          <div class="part-qty">
+            <button class="btn sm ghost icon-only" data-qty-step="-1" data-part="${p.id}" ${p.quantity <= 1 ? "disabled" : ""} title="Menos uma cópia">−</button>
+            <input type="number" min="1" max="500" value="${p.quantity}" data-qty-input="${p.id}" />
+            <button class="btn sm ghost icon-only" data-qty-step="1" data-part="${p.id}" title="Mais uma cópia">+</button>
+          </div>
+          <span class="small muted">cópia(s)</span>
+          <label class="toggle small" style="margin-left:auto"><input type="checkbox" data-rotatable="${p.id}" ${p.rotatable ? "checked" : ""}/> girar 90° se ajudar</label>
+        </div>` : ""}
+      </div>`;
+    })
+    .join("");
+  const allReady = job.parts.length > 0 && job.parts.every((p) => p.status === "ready");
+  nestBox.hidden = !allReady;
+  const nestBtn = $("btn-nest");
+  nestBtn.disabled = !allReady || BUSY_STATUSES.has(job.status);
+  // job.analysis is only ever set right after a successful nest, and the
+  // backend clears it the moment any part/quantity/rotation/machine changes
+  // - so its presence *is* the "still matches what's on screen" signal.
+  nestBtn.innerHTML = job.analysis ? `${icon("regenerate")} Nestear novamente` : `${icon("play")} Nestear peças`;
+  const totalCopies = job.parts.reduce((n, p) => n + (p.enabled ? p.quantity : 0), 0);
+  $("nest-hint").textContent = job.analysis
+    ? `Nesting atual: ${totalCopies} cópia(s) posicionada(s). Nesteie de novo só se quiser recalcular o layout.`
+    : `Posiciona ${totalCopies} cópia(s) automaticamente na mesa.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,16 +279,32 @@ function renderCanvas() {
   const wrap = $("bed-wrap");
   const p = profile();
   const bed = job?.analysis?.bed_mm || p?.bed_mm || [900, 600];
-  $("empty-state").hidden = !!job?.analysis;
+  const emptyState = $("empty-state");
+  emptyState.hidden = !!job;
+  if (job && !job.analysis) {
+    // Parts uploaded but not nested yet: keep the canvas mostly blank with a
+    // small hint instead of the full "envie o desenho" card.
+    wrap.hidden = true;
+    $("canvas-nav").hidden = true;
+    $("canvas-legend").hidden = true;
+    $("canvas-badges").innerHTML = `<span class="chip info">Peças na lista ao lado — aperte "Nestear peças" para posicioná-las na mesa</span>`;
+    return;
+  }
   wrap.hidden = !job?.analysis;
   $("canvas-nav").hidden = !job?.analysis;
-  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; return; }
+  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; $("canvas-legend").hidden = true; return; }
   fitBed(bed);
   $("bed-label").textContent = `${bed[0]} × ${bed[1]} mm — ${p?.name || ""}`;
   const previewUrl = job.artifacts?.preview_svg;
   if (previewUrl && $("layer-preview").dataset.src !== previewUrl + job.updated_at) {
     $("layer-preview").dataset.src = previewUrl + job.updated_at;
-    fetch(previewUrl).then((r) => r.text()).then((svg) => { $("layer-preview").innerHTML = svg; normalizeSvg($("layer-preview").querySelector("svg")); });
+    fetch(previewUrl).then((r) => r.text()).then((svg) => {
+      $("layer-preview").innerHTML = svg;
+      normalizeSvg($("layer-preview").querySelector("svg"));
+      styleShapeElements();
+    });
+  } else {
+    styleShapeElements();
   }
   const pathUrl = job.status === "ready" ? job.artifacts?.path_svg : null;
   const layerPath = $("layer-path");
@@ -261,6 +326,7 @@ function renderCanvas() {
   if (job.analysis.outside_bed) badges.push(`<span class="chip danger">${icon("critical")} Geometria fora da mesa</span>`);
   if (job.status === "ready" && state.showPath) badges.push(`<span class="chip info">${icon("travel")} Percurso: cores por operação, tracejado = deslocamento</span>`);
   $("canvas-badges").innerHTML = badges.join("");
+  renderLegend();
 }
 function normalizeSvg(svg) {
   if (!svg) return;
@@ -290,6 +356,82 @@ function fitBed(bed) {
 }
 
 // ---------------------------------------------------------------------------
+// Element selection: click shapes on the canvas, assign them to an operation
+// by clicking a color chip in the legend below.
+// ---------------------------------------------------------------------------
+function elementOperation(elementId) {
+  const ops = state.job?.params?.operations;
+  const opId = state.job?.params?.assignments?.[elementId];
+  return opId ? ops?.find((o) => o.id === opId) : null;
+}
+function styleShapeElements() {
+  const job = state.job;
+  const root = $("layer-preview").querySelector("svg");
+  if (!job?.analysis || !root) return;
+  for (const info of job.analysis.elements) {
+    const el = root.getElementById(info.id);
+    if (!el) continue;
+    el.classList.add("svc-shape");
+    const op = elementOperation(info.id);
+    if (op) {
+      el.style.stroke = op.color;
+      el.style.strokeDasharray = "";
+      if (el.hasAttribute("fill") && el.getAttribute("fill") !== "none") {
+        el.style.fill = op.color;
+        el.style.fillOpacity = "0.35";
+      }
+    } else {
+      // Unassigned (or a reference point MeerK40t won't cut, e.g. elem point).
+      el.style.stroke = "#9aa0a6";
+      el.style.strokeDasharray = "2 2";
+    }
+    el.classList.toggle("selected", state.selected.has(info.id));
+  }
+}
+function renderLegend() {
+  const job = state.job;
+  const box = $("canvas-legend");
+  const ops = job?.params?.operations;
+  if (!job?.analysis || !ops?.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const sorted = [...ops].sort((a, b) => a.order - b.order);
+  const n = state.selected.size;
+  const info = $("canvas-legend-info");
+  info.hidden = n === 0;
+  info.textContent = n > 0 ? `${n} elemento(s) selecionado(s) · clique numa cor para atribuir · Esc cancela` : "";
+  $("canvas-legend-chips").innerHTML = sorted
+    .map(
+      (op) =>
+        `<button type="button" class="legend-chip${n > 0 ? " selectable" : ""}" data-assign-op="${op.id}" title="${esc(op.label || op.id)}"><span class="dot" style="background:${esc(op.color)}"></span>${esc(op.label || op.id)}</button>`
+    )
+    .join("");
+}
+function assignSelectionTo(opId) {
+  const job = state.job;
+  if (!job?.params || state.selected.size === 0) return;
+  for (const elementId of state.selected) {
+    job.params.assignments[elementId] = opId;
+  }
+  state.selected.clear();
+  styleShapeElements();
+  renderLegend();
+  renderOps();
+  renderJobBar();
+  saveParams();
+  const op = job.params.operations.find((o) => o.id === opId);
+  toast(`Atribuído a "${op?.label || opId}".`);
+}
+function clearSelection() {
+  if (state.selected.size === 0) return;
+  state.selected.clear();
+  styleShapeElements();
+  renderLegend();
+}
+
+// ---------------------------------------------------------------------------
 // Rendering: operations
 // ---------------------------------------------------------------------------
 function opSummary(op) {
@@ -305,7 +447,13 @@ function sourceLabel(op) {
   const s = op.source || {};
   if (s.layer) return `layer ${s.layer}`;
   if (s.color) return `cor ${s.color}`;
-  return "seleção";
+  return "seleção manual";
+}
+function opElementCount(op) {
+  const assignments = state.job?.params?.assignments || {};
+  let n = 0;
+  for (const opId of Object.values(assignments)) if (opId === op.id) n++;
+  return n;
 }
 function numField(op, key, label, unit, opts = {}) {
   const errors = validateOp(op);
@@ -321,12 +469,10 @@ function renderOps() {
   const list = $("op-list");
   if (!job?.params) { list.innerHTML = ""; return; }
   const ops = [...job.params.operations].sort((a, b) => a.order - b.order);
-  const analysisOps = Object.fromEntries((job.analysis?.operations || []).map((o) => [o.id, o]));
   list.innerHTML = ops.map((op, index) => {
     const errors = validateOp(op);
     const open = state.expanded.has(op.id);
-    const info = analysisOps[op.id];
-    const count = info?.elements ?? "?";
+    const count = opElementCount(op);
     return `<div class="op-card${op.enabled ? "" : " disabled"}${Object.keys(errors).length ? " has-error" : ""}" data-op="${op.id}">
       <div class="op-head">
         <span class="drag" title="Ordem de execução">${index + 1}</span>
@@ -400,15 +546,18 @@ function renderResult() {
     </div>
     <p class="small muted" style="margin-top:8px">Arquivo: ${esc(job.name)} → <strong>.rd</strong> (${Math.round((job.artifacts?.rd_bytes || 0) / 1024)} KB) · magic 0x${(profile()?.magic || 136).toString(16).toUpperCase()}</p>`;
 }
+const BUSY_LABEL = { analyzing_parts: "Analisando peça(s)…", nesting: "Posicionando peças…", generating: "Gerando o arquivo da máquina…" };
+
 function renderJobBar() {
   const job = state.job;
-  const busy = job && (job.status === "analyzing" || job.status === "generating");
+  const busy = job && BUSY_STATUSES.has(job.status);
   const warns = warningsList(job);
   const critical = warns.filter((w) => w.severity === "critical").length;
   const wbox = $("jobbar-warnings");
   if (!job) wbox.innerHTML = `<span class="muted">Envie um arquivo para começar.</span>`;
   else if (job.status === "failed") wbox.innerHTML = `<span class="chip danger">${icon("critical")} ${esc(job.error?.message || "Falha no processamento")}</span>`;
-  else if (busy) wbox.innerHTML = `<span class="chip info">${job.status === "analyzing" ? "Analisando o arquivo…" : "Gerando o arquivo da máquina…"}</span>`;
+  else if (busy) wbox.innerHTML = `<span class="chip info">${BUSY_LABEL[job.status] || "Processando…"}</span>`;
+  else if (job.status === "parts_ready") wbox.innerHTML = `<span class="muted">Aperte "Nestear peças" para posicioná-las na mesa.</span>`;
   else if (warns.length) wbox.innerHTML = `<span class="chip ${critical ? "danger" : "warn"}">${icon(critical ? "critical" : "warning")} ${warns.length} aviso(s)${critical ? ` · ${critical} crítico(s)` : ""}</span><button class="btn sm ghost" id="btn-see-warnings">Ver</button>`;
   else if (job.status === "ready") wbox.innerHTML = `<span class="chip ok">${icon("ok")} Sem avisos</span>`;
   else wbox.innerHTML = `<span class="muted">Ajuste as operações e gere o arquivo.</span>`;
@@ -418,13 +567,14 @@ function renderJobBar() {
   $("estimate-value").style.opacity = job?.stale ? "0.4" : "1";
   const gen = $("btn-generate");
   gen.disabled = !job?.analysis || busy || !paramsValid();
-  gen.innerHTML = job?.status === "ready" ? `${icon("regenerate")} ${job.stale ? "Gerar novamente" : "Gerar novamente"}` : `${icon("play")} Gerar arquivo`;
+  gen.innerHTML = job?.status === "ready" ? `${icon("regenerate")} Gerar novamente` : `${icon("play")} Gerar arquivo`;
   const dl = $("btn-download");
   dl.disabled = !(job?.status === "ready" && !job.stale && (critical === 0 || state.confirmCritical));
   dl.innerHTML = `${icon("download")} Baixar .rd`;
   if (!job) setStatus("", "Pronto");
-  else if (busy) setStatus("busy", job.status === "analyzing" ? "Analisando" : "Gerando");
+  else if (busy) setStatus("busy", BUSY_LABEL[job.status]?.replace(/…$/, "") || "Processando");
   else if (job.status === "failed") setStatus("error", "Falha");
+  else if (job.status === "parts_ready") setStatus("", "Pronto para nestear");
   else setStatus("ok", job.status === "ready" ? (job.stale ? "Desatualizado" : "Arquivo pronto") : "Aguardando parâmetros");
 }
 function renderHistory() {
@@ -437,7 +587,7 @@ function renderHistory() {
   </div>`).join("");
 }
 function renderAll() {
-  renderProfiles(); renderFile(); renderCanvas(); renderOps(); renderResult(); renderJobBar(); renderSteps(); renderHistory();
+  renderProfiles(); renderParts(); renderCanvas(); renderOps(); renderResult(); renderJobBar(); renderSteps(); renderHistory();
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +599,7 @@ async function loadJobs() {
 async function openJob(id) {
   state.job = await api(`/api/jobs/${id}`);
   state.expanded.clear();
+  state.selected.clear();
   state.confirmCritical = false;
   state.showPath = false;
   state.step = state.job.status === "ready" ? 3 : state.job.analysis ? 2 : 1;
@@ -459,7 +610,7 @@ async function openJob(id) {
 function schedulePoll() {
   clearTimeout(state.pollTimer);
   const job = state.job;
-  if (!job || !(job.status === "analyzing" || job.status === "generating")) return;
+  if (!job || !BUSY_STATUSES.has(job.status)) return;
   state.pollTimer = setTimeout(async () => {
     try {
       const fresh = await api(`/api/jobs/${job.id}`);
@@ -467,7 +618,8 @@ function schedulePoll() {
       state.job = fresh;
       if (fresh.status !== wasBusy) {
         await loadJobs();
-        if (fresh.status === "ready_for_params") { state.step = 2; toast("Arquivo analisado. Revise as operações."); }
+        if (fresh.status === "parts_ready" && wasBusy === "analyzing_parts") toast("Peça(s) analisada(s). Ajuste a quantidade e aperte Nestear.");
+        if (fresh.status === "ready_for_params") { state.step = 2; state.selected.clear(); toast("Peças posicionadas. Revise as operações."); }
         if (fresh.status === "ready") { state.step = 3; state.showPath = true; toast("Arquivo .rd pronto para download."); }
         if (fresh.status === "failed") toast(`Falha: ${fresh.error?.message || "erro desconhecido"}`);
       }
@@ -476,20 +628,69 @@ function schedulePoll() {
     schedulePoll();
   }, 800);
 }
-async function upload(file) {
+async function upload(files) {
   const p = profile();
   if (!p) return toast("Escolha um perfil de máquina.");
+  const list = Array.from(files);
+  if (!list.length) return;
   const form = new FormData();
-  form.append("file", file);
+  for (const f of list) form.append("files", f);
   form.append("profile_id", p.id);
   try {
     setStatus("busy", "Enviando");
     state.job = await api("/api/jobs", { method: "POST", body: form });
-    state.expanded.clear(); state.confirmCritical = false; state.showPath = false; state.step = 1;
+    state.expanded.clear(); state.selected.clear(); state.confirmCritical = false; state.showPath = false; state.step = 1;
     await loadJobs();
     renderAll();
     schedulePoll();
   } catch (e) { setStatus("error", "Falha"); toast(e.message); }
+}
+async function addParts(files) {
+  const job = state.job;
+  const list = Array.from(files);
+  if (!job || !list.length) return;
+  const form = new FormData();
+  for (const f of list) form.append("files", f);
+  try {
+    state.job = await api(`/api/jobs/${job.id}/parts`, { method: "POST", body: form });
+    state.selected.clear();
+    state.step = 1;
+    renderAll();
+    schedulePoll();
+  } catch (e) { toast(`Não foi possível adicionar: ${e.message}`); }
+}
+async function removePart(partId) {
+  const job = state.job;
+  if (!job) return;
+  const part = job.parts.find((p) => p.id === partId);
+  if (job.parts.length <= 1) return toast("O projeto precisa de ao menos uma peça.");
+  if (!confirm(`Remover "${part?.name}"?`)) return;
+  try {
+    state.job = await api(`/api/jobs/${job.id}/parts/${partId}`, { method: "DELETE" });
+    state.selected.clear();
+    state.step = 1;
+    renderAll();
+  } catch (e) { toast(`Não foi possível remover: ${e.message}`); }
+}
+async function patchPart(partId, patch) {
+  const job = state.job;
+  if (!job) return;
+  try {
+    state.job = await api(`/api/jobs/${job.id}/parts/${partId}`, { method: "PUT", json: patch });
+    state.selected.clear();
+    state.step = 1;
+    renderAll();
+  } catch (e) { toast(`Não foi possível atualizar a peça: ${e.message}`); }
+}
+async function runNest() {
+  const job = state.job;
+  if (!job) return;
+  try {
+    state.job = await api(`/api/jobs/${job.id}/nest`, { method: "POST" });
+    state.selected.clear();
+    renderAll();
+    schedulePoll();
+  } catch (e) { toast(`Não foi possível nestear: ${e.message}`); }
 }
 function saveParams(immediate = false) {
   clearTimeout(state.saveTimer);
@@ -565,16 +766,23 @@ function bind() {
 
   for (const n of [1, 2, 3]) $(`step-${n}`).onclick = () => { state.step = n; renderSteps(); };
   $("btn-upload").onclick = () => $("file-input").click();
-  $("btn-change-file").onclick = () => { state.job = null; renderAll(); };
-  $("file-input").onchange = (e) => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ""; };
+  $("file-input").onchange = (e) => { if (e.target.files.length) upload(e.target.files); e.target.value = ""; };
+  $("btn-add-part").onclick = () => $("file-input-add").click();
+  $("file-input-add").onchange = (e) => { if (e.target.files.length) addParts(e.target.files); e.target.value = ""; };
   $("btn-example").onclick = async () => {
     const blob = await (await fetch("exemplo.dxf")).blob();
-    upload(new File([blob], "exemplo-3-layers.dxf", { type: "application/dxf" }));
+    upload([new File([blob], "exemplo-3-layers.dxf", { type: "application/dxf" })]);
   };
   const canvas = $("canvas");
   canvas.addEventListener("dragover", (e) => { e.preventDefault(); canvas.classList.add("dragover"); });
   canvas.addEventListener("dragleave", () => canvas.classList.remove("dragover"));
-  canvas.addEventListener("drop", (e) => { e.preventDefault(); canvas.classList.remove("dragover"); const f = e.dataTransfer.files[0]; if (f) upload(f); });
+  canvas.addEventListener("drop", (e) => {
+    e.preventDefault();
+    canvas.classList.remove("dragover");
+    if (!e.dataTransfer.files.length) return;
+    if (state.job) addParts(e.dataTransfer.files);
+    else upload(e.dataTransfer.files);
+  });
   $("profile-select").onchange = () => {
     loadMachineForm(state.profiles.find((p) => p.id === $("profile-select").value));
     renderProfiles();
@@ -682,6 +890,49 @@ function bind() {
   $("nav-path").onclick = () => { state.showPath = !state.showPath; renderCanvas(); renderResult(); };
   $("nav-travel").onclick = () => { state.showTravel = !state.showTravel; renderCanvas(); };
   window.addEventListener("resize", () => renderCanvas());
+
+  $("parts-list").addEventListener("click", (e) => {
+    const remove = e.target.closest("[data-remove-part]");
+    if (remove) return removePart(remove.dataset.removePart);
+    const toggle = e.target.closest("[data-toggle-part]");
+    if (toggle) {
+      const part = state.job.parts.find((p) => p.id === toggle.dataset.togglePart);
+      return patchPart(toggle.dataset.togglePart, { enabled: !part.enabled });
+    }
+    const step = e.target.closest("[data-qty-step]");
+    if (step) {
+      const part = state.job.parts.find((p) => p.id === step.dataset.part);
+      const qty = Math.max(1, Math.min(500, part.quantity + Number(step.dataset.qtyStep)));
+      return patchPart(step.dataset.part, { quantity: qty });
+    }
+  });
+  $("parts-list").addEventListener("change", (e) => {
+    const qtyInput = e.target.closest("[data-qty-input]");
+    if (qtyInput) {
+      const qty = Math.max(1, Math.min(500, Number(qtyInput.value) || 1));
+      return patchPart(qtyInput.dataset.qtyInput, { quantity: qty });
+    }
+    const rotatable = e.target.closest("[data-rotatable]");
+    if (rotatable) return patchPart(rotatable.dataset.rotatable, { rotatable: rotatable.checked });
+  });
+  $("btn-nest").onclick = runNest;
+
+  $("canvas-legend-chips").addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-assign-op]");
+    if (chip && state.selected.size > 0) assignSelectionTo(chip.dataset.assignOp);
+  });
+  $("layer-preview").addEventListener("click", (e) => {
+    const shape = e.target.closest(".svc-shape");
+    if (!shape) return;
+    const id = shape.id;
+    if (!id) return;
+    if (!e.shiftKey) state.selected.clear();
+    if (state.selected.has(id) && e.shiftKey) state.selected.delete(id);
+    else state.selected.add(id);
+    styleShapeElements();
+    renderLegend();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearSelection(); });
 }
 
 // ---------------------------------------------------------------------------

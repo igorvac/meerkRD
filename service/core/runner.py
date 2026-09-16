@@ -16,11 +16,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT = int(os.environ.get("RD_JOB_TIMEOUT", "180"))
 
 
-def run_job(job_dir, action, input_name, profile, params=None, timeout=None):
+def run_job(job_dir, request, timeout=None):
+    """
+    request: the full JSON body mk_job.py expects, e.g.
+        {"action": "analyze_part", "part": {...}}
+        {"action": "analyze_nested", "parts": [...], "placements": [...], "profile": {...}}
+        {"action": "generate", "parts": [...], "placements": [...], "profile": {...}, "params": {...}}
+    """
     job_dir = Path(job_dir)
-    request = {"action": action, "input": input_name, "profile": profile}
-    if params is not None:
-        request["params"] = params
+    action = request.get("action", "job")
     (job_dir / "request.json").write_text(
         json.dumps(request, ensure_ascii=False), encoding="utf-8"
     )

@@ -3,12 +3,22 @@ FastAPI application: turns MeerK40t into a file-conversion service.
 
     uvicorn service.api.main:app --reload
 
+A job is a small project: one or more uploaded files ("parts"), each cut any
+number of times ("quantity"). Parts are analyzed individually (size, layers)
+as soon as they're uploaded; "nest" then lays every requested copy out on the
+machine's bed (service/core/nesting.py - bounding-box shelf packing, not true
+irregular nesting) and a combined analysis (elements + suggested operations,
+merged by layer name across every part) follows automatically. Editing
+operations works against an explicit element_id -> operation_id assignment
+map, so a user can select individual shapes and move them between operations.
+
 Environment:
     RD_DATA_DIR       where jobs and profiles live (default: service/data)
     RD_API_KEY        if set, every /api request needs header X-API-Key
     RD_WORKERS        parallel MeerK40t subprocesses (default: 2)
     RD_JOB_TIMEOUT    seconds per subprocess (default: 180)
-    RD_MAX_UPLOAD_MB  upload size limit (default: 25)
+    RD_MAX_UPLOAD_MB  upload size limit per file (default: 25)
+    RD_MAX_PARTS      max parts per job (default: 40)
 """
 
 import json
@@ -20,6 +30,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
@@ -28,6 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from service.core.nesting import expand_quantities, pack_shelves
 from service.core.runner import run_job
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +50,9 @@ WEB_DIR = SERVICE_ROOT / "web"
 API_KEY = os.environ.get("RD_API_KEY")
 WORKERS = int(os.environ.get("RD_WORKERS", "2"))
 MAX_UPLOAD = int(os.environ.get("RD_MAX_UPLOAD_MB", "25")) * 1024 * 1024
+MAX_PARTS = int(os.environ.get("RD_MAX_PARTS", "40"))
 ALLOWED_EXT = {"dxf", "svg", "svgz", "lbrn", "lbrn2", "xcs", "png", "jpg", "jpeg", "bmp"}
+BUSY_STATUSES = ("analyzing_parts", "nesting", "generating")
 
 OP_DEFAULTS = {
     "cut": {"speed_mm_s": 10, "power_pct": 60, "passes": 1, "kerf_mm": 0.0},
@@ -47,13 +61,14 @@ OP_DEFAULTS = {
     "image": {"speed_mm_s": 300, "power_pct": 25, "passes": 1, "dpi": 254, "direction": "top_to_bottom"},
 }
 
+
 @asynccontextmanager
 async def lifespan(_app):
     ensure_data()
     # Jobs interrupted by a restart are marked failed rather than left spinning.
     for path in JOBS_DIR.glob("j_*/job.json"):
         job = read_json(path)
-        if job.get("status") in ("analyzing", "generating"):
+        if job.get("status") in (*BUSY_STATUSES, "analyzing"):
             job["status"] = "failed"
             job["error"] = {"code": "interrupted", "message": "Serviço reiniciado durante o processamento."}
             write_json(path, job)
@@ -61,7 +76,7 @@ async def lifespan(_app):
     executor.shutdown(wait=False, cancel_futures=True)
 
 
-app = FastAPI(title="MeerK40t RD Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="MeerK40t RD Service", version="0.2.0", lifespan=lifespan)
 executor = ThreadPoolExecutor(max_workers=WORKERS)
 _lock = threading.Lock()
 
@@ -70,12 +85,11 @@ _lock = threading.Lock()
 class OperationSource(BaseModel):
     layer: Optional[str] = None
     color: Optional[str] = None
-    element_ids: Optional[List[str]] = None
 
 
 class OperationParams(BaseModel):
     id: str
-    source: OperationSource
+    source: Optional[OperationSource] = None
     type: Literal["cut", "engrave", "raster", "image"] = "cut"
     label: Optional[str] = None
     enabled: bool = True
@@ -110,6 +124,7 @@ class OptimizeParams(BaseModel):
 
 class JobParams(BaseModel):
     operations: List[OperationParams]
+    assignments: Dict[str, str] = {}
     optimize: OptimizeParams = OptimizeParams()
     material_preset: Optional[str] = None
 
@@ -122,6 +137,22 @@ class JobParams(BaseModel):
         if not value:
             raise ValueError("pelo menos uma operação é necessária")
         return value
+
+    @field_validator("assignments")
+    @classmethod
+    def _assignments_target_known_ops(cls, value, info):
+        ops = info.data.get("operations") or []
+        known = {op.id for op in ops}
+        bad = sorted({v for v in value.values() if v not in known})
+        if bad:
+            raise ValueError(f"Atribuições apontam para operações inexistentes: {', '.join(bad[:5])}")
+        return value
+
+
+class PartUpdate(BaseModel):
+    quantity: Optional[int] = Field(default=None, ge=1, le=500)
+    rotatable: Optional[bool] = None
+    enabled: Optional[bool] = None
 
 
 class MachineProfile(BaseModel):
@@ -197,6 +228,24 @@ def update_job(job_id, **changes):
         return job
 
 
+def mutate_part(job_id, part_id, mutator):
+    """Read-modify-write a single part inside a job under the shared lock -
+    used by the per-part analysis workers, which may finish in any order and
+    concurrently with each other."""
+    with _lock:
+        path = JOBS_DIR / job_id / "job.json"
+        job = read_json(path)
+        for p in job["parts"]:
+            if p["id"] == part_id:
+                mutator(p)
+                break
+        if job["status"] == "analyzing_parts" and all(p["status"] in ("ready", "failed") for p in job["parts"]):
+            job["status"] = "parts_ready"
+        job["updated_at"] = now()
+        write_json(path, job)
+        return job
+
+
 def profiles():
     return read_json(DATA_DIR / "machine_profiles.json")
 
@@ -213,9 +262,73 @@ def get_profile(profile_id):
 
 
 def public_job(job):
+    return dict(job)
+
+
+def reset_nesting_state(job):
+    """Called whenever the part list changes (add/remove/quantity/rotate):
+    any existing layout, analysis, operation params and generated output are
+    invalidated, since element ids and positions depend on the exact set of
+    loaded instances."""
     job = dict(job)
-    job.pop("analysis_raw", None)
+    any_pending = any(p["status"] not in ("ready", "failed") for p in job["parts"])
+    job.update(
+        {
+            "status": "analyzing_parts" if any_pending else "parts_ready",
+            "placements": None,
+            "unplaced_part_ids": [],
+            "analysis": None,
+            "params": None,
+            "estimate": None,
+            "warnings": [],
+            "colors": None,
+            "result_operations": None,
+            "artifacts": {},
+            "error": None,
+            "stale": False,
+        }
+    )
     return job
+
+
+def part_id_from_filename(name, existing_ids):
+    stem = Path(name).stem.lower()
+    base = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")[:30] or "peca"
+    part_id = base
+    i = 2
+    while part_id in existing_ids:
+        part_id = f"{base}-{i}"
+        i += 1
+    return part_id
+
+
+async def save_part_file(job_dir, upload, existing_ids):
+    original = Path(upload.filename or "arquivo").name
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(400, f"Formato não suportado: .{ext or '?'} ({original})")
+    content = await upload.read()
+    if len(content) > MAX_UPLOAD:
+        raise HTTPException(413, f"Arquivo maior que o limite permitido: {original}")
+    if not content:
+        raise HTTPException(400, f"Arquivo vazio: {original}")
+    part_id = part_id_from_filename(original, existing_ids)
+    filename = f"{part_id}.{ext}"
+    (job_dir / filename).write_bytes(content)
+    return {
+        "id": part_id,
+        "file": filename,
+        "name": original,
+        "quantity": 1,
+        "rotatable": True,
+        "enabled": True,
+        "status": "analyzing",
+        "width_mm": None,
+        "height_mm": None,
+        "layers": [],
+        "elements": None,
+        "error": None,
+    }
 
 
 # --------------------------------------------------------------------------- auth
@@ -225,13 +338,11 @@ def require_key(x_api_key: Optional[str] = Header(default=None)):
 
 
 # --------------------------------------------------------------------------- workers
-def default_params(analysis, preset=None):
-    settings = (preset or {}).get("settings", {})
+def default_params(analysis):
     operations = []
     for index, op in enumerate(analysis["operations"]):
         op_type = op["type"]
         values = dict(OP_DEFAULTS[op_type])
-        values.update(settings.get(op_type, {}))
         operations.append(
             {
                 "id": op["id"],
@@ -244,17 +355,58 @@ def default_params(analysis, preset=None):
                 **values,
             }
         )
-    return {"operations": operations, "optimize": OptimizeParams().model_dump(), "material_preset": None}
+    return {
+        "operations": operations,
+        "assignments": analysis.get("assignments", {}),
+        "optimize": OptimizeParams().model_dump(),
+        "material_preset": None,
+    }
 
 
-def analyze_worker(job_id):
+def enabled_parts_for_engine(job):
+    return [{"id": p["id"], "file": p["file"]} for p in job["parts"] if p["enabled"]]
+
+
+def analyze_part_worker(job_id, part_id):
+    job = load_job(job_id)
+    part = next(p for p in job["parts"] if p["id"] == part_id)
+    result = run_job(JOBS_DIR / job_id, {"action": "analyze_part", "part": {"id": part["id"], "file": part["file"]}})
+
+    def apply(p):
+        if result.get("ok"):
+            p.update(
+                {
+                    "status": "ready",
+                    "width_mm": result["width_mm"],
+                    "height_mm": result["height_mm"],
+                    "layers": result["layers"],
+                    "elements": result["elements"],
+                    "error": None,
+                }
+            )
+        else:
+            p["status"] = "failed"
+            p["error"] = result.get("error")
+
+    mutate_part(job_id, part_id, apply)
+
+
+def analyze_nested_worker(job_id):
     job = load_job(job_id)
     profile = get_profile(job["profile_id"])
-    result = run_job(JOBS_DIR / job_id, "analyze", job["input_file"], profile)
+    result = run_job(
+        JOBS_DIR / job_id,
+        {
+            "action": "analyze_nested",
+            "parts": enabled_parts_for_engine(job),
+            "placements": job["placements"],
+            "profile": profile,
+        },
+    )
     if not result.get("ok"):
         update_job(job_id, status="failed", error=result.get("error"))
         return
-    analysis = {k: result[k] for k in ("elements", "operations", "bbox_mm", "bed_mm", "outside_bed")}
+    analysis = {k: result[k] for k in ("elements", "operations", "assignments", "bbox_mm", "bed_mm", "outside_bed")}
     params = default_params(analysis)
     update_job(
         job_id,
@@ -269,7 +421,17 @@ def analyze_worker(job_id):
 def generate_worker(job_id):
     job = load_job(job_id)
     profile = get_profile(job["profile_id"])
-    result = run_job(JOBS_DIR / job_id, "generate", job["input_file"], profile, job["params"])
+    result = run_job(
+        JOBS_DIR / job_id,
+        {
+            "action": "generate",
+            "parts": enabled_parts_for_engine(job),
+            "placements": job["placements"],
+            "profile": profile,
+            "params": job["params"],
+            "unplaced_parts": job.get("unplaced_part_ids"),
+        },
+    )
     if not result.get("ok"):
         update_job(job_id, status="failed", error=result.get("error"))
         return
@@ -292,10 +454,10 @@ def generate_worker(job_id):
     )
 
 
-def submit(worker, job_id):
+def submit(fn, job_id):
     def guarded():
         try:
-            worker(job_id)
+            fn()
         except Exception as e:  # noqa: BLE001 - never lose a job silently
             update_job(job_id, status="failed", error={"code": "internal", "message": str(e)})
 
@@ -339,35 +501,46 @@ def list_jobs():
     jobs = [read_json(p) for p in JOBS_DIR.glob("j_*/job.json")]
     jobs.sort(key=lambda j: j["created_at"], reverse=True)
     return [
-        {k: j.get(k) for k in ("id", "name", "created_at", "status", "profile_id", "estimate", "stale")}
+        {
+            "id": j["id"],
+            "name": j.get("name"),
+            "created_at": j["created_at"],
+            "status": j.get("status"),
+            "profile_id": j.get("profile_id"),
+            "estimate": j.get("estimate"),
+            "stale": j.get("stale"),
+            "parts_count": len(j.get("parts", [])),
+        }
         for j in jobs
     ]
 
 
 @app.post("/api/jobs", dependencies=[Depends(require_key)], status_code=201)
-async def create_job(file: UploadFile = File(...), profile_id: str = Form(...)):
+async def create_job(files: List[UploadFile] = File(...), profile_id: str = Form(...)):
     get_profile(profile_id)
-    original = Path(file.filename or "arquivo").name
-    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
-    if ext not in ALLOWED_EXT:
-        raise HTTPException(400, f"Formato não suportado: .{ext or '?'}")
-    content = await file.read()
-    if len(content) > MAX_UPLOAD:
-        raise HTTPException(413, "Arquivo maior que o limite permitido")
-    if not content:
-        raise HTTPException(400, "Arquivo vazio")
+    if not files:
+        raise HTTPException(400, "Envie ao menos um arquivo")
+    if len(files) > MAX_PARTS:
+        raise HTTPException(400, f"Máximo de {MAX_PARTS} peças por projeto")
     job_id = "j_" + uuid.uuid4().hex[:12]
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True)
-    input_name = f"input.{ext}"
-    (job_dir / input_name).write_bytes(content)
+    existing_ids = set()
+    parts = []
+    for f in files:
+        part = await save_part_file(job_dir, f, existing_ids)
+        existing_ids.add(part["id"])
+        parts.append(part)
+    name = files[0].filename if len(files) == 1 else f"Projeto com {len(files)} peças"
     job = {
         "id": job_id,
-        "name": original,
-        "input_file": input_name,
+        "name": name,
+        "parts": parts,
+        "placements": None,
+        "unplaced_part_ids": [],
         "created_at": now(),
         "updated_at": now(),
-        "status": "analyzing",
+        "status": "analyzing_parts",
         "profile_id": profile_id,
         "params": None,
         "analysis": None,
@@ -378,7 +551,135 @@ async def create_job(file: UploadFile = File(...), profile_id: str = Form(...)):
         "stale": False,
     }
     save_job(job)
-    submit(analyze_worker, job_id)
+    for part in parts:
+        submit(partial(analyze_part_worker, job_id, part["id"]), job_id)
+    return public_job(job)
+
+
+@app.post("/api/jobs/{job_id}/parts", dependencies=[Depends(require_key)], status_code=201)
+async def add_parts(job_id: str, files: List[UploadFile] = File(...)):
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    if not files:
+        raise HTTPException(400, "Envie ao menos um arquivo")
+    if len(job["parts"]) + len(files) > MAX_PARTS:
+        raise HTTPException(400, f"Máximo de {MAX_PARTS} peças por projeto")
+    job_dir = job_path(job_id)
+    existing_ids = {p["id"] for p in job["parts"]}
+    new_parts = []
+    for f in files:
+        part = await save_part_file(job_dir, f, existing_ids)
+        existing_ids.add(part["id"])
+        new_parts.append(part)
+    job = dict(job)
+    job["parts"] = job["parts"] + new_parts
+    job = reset_nesting_state(job)
+    save_job(job)
+    for part in new_parts:
+        submit(partial(analyze_part_worker, job_id, part["id"]), job_id)
+    return public_job(job)
+
+
+@app.put("/api/jobs/{job_id}/parts/{part_id}", dependencies=[Depends(require_key)])
+def update_part(job_id: str, part_id: str, patch: PartUpdate):
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    found = False
+    for p in job["parts"]:
+        if p["id"] == part_id:
+            found = True
+            if patch.quantity is not None:
+                p["quantity"] = patch.quantity
+            if patch.rotatable is not None:
+                p["rotatable"] = patch.rotatable
+            if patch.enabled is not None:
+                p["enabled"] = patch.enabled
+    if not found:
+        raise HTTPException(404, "Peça não encontrada")
+    job = reset_nesting_state(job)
+    save_job(job)
+    return public_job(job)
+
+
+@app.delete("/api/jobs/{job_id}/parts/{part_id}", dependencies=[Depends(require_key)])
+def delete_part(job_id: str, part_id: str):
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    remaining = [p for p in job["parts"] if p["id"] != part_id]
+    if len(remaining) == len(job["parts"]):
+        raise HTTPException(404, "Peça não encontrada")
+    if not remaining:
+        raise HTTPException(409, "O projeto precisa de ao menos uma peça — exclua o trabalho inteiro em vez disso")
+    removed = next(p for p in job["parts"] if p["id"] == part_id)
+    job = dict(job)
+    job["parts"] = remaining
+    job = reset_nesting_state(job)
+    save_job(job)
+    file_path = job_path(job_id) / removed["file"]
+    if file_path.exists():
+        file_path.unlink()
+    return public_job(job)
+
+
+@app.post("/api/jobs/{job_id}/nest", dependencies=[Depends(require_key)], status_code=202)
+def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    active = [p for p in job["parts"] if p["enabled"]]
+    if not active:
+        raise HTTPException(409, "Nenhuma peça ativa para posicionar")
+    if any(p["status"] != "ready" for p in active):
+        raise HTTPException(409, "Aguarde a análise de todas as peças terminar")
+    profile = get_profile(job["profile_id"])
+    items = expand_quantities(
+        [
+            {
+                "id": p["id"],
+                "width": p["width_mm"],
+                "height": p["height_mm"],
+                "quantity": p["quantity"],
+                "rotatable": p["rotatable"],
+            }
+            for p in active
+        ]
+    )
+    result = pack_shelves(
+        items,
+        bed_width=profile["bed_mm"][0],
+        bed_height=profile["bed_mm"][1],
+        spacing=spacing_mm,
+        margin=margin_mm,
+    )
+    placements = []
+    for p in result.placements:
+        part_id, instance_index = p.id.rsplit("#", 1)
+        placements.append(
+            {
+                "part_id": part_id,
+                "instance_index": int(instance_index),
+                "x_mm": p.x,
+                "y_mm": p.y,
+                "width_mm": p.width,
+                "height_mm": p.height,
+                "rotated": p.rotated,
+            }
+        )
+    unplaced_part_ids = sorted({pid.rsplit("#", 1)[0] for pid in result.unplaced})
+    job = reset_nesting_state(job)
+    job.update(
+        {
+            "status": "nesting",
+            "placements": placements,
+            "unplaced_part_ids": unplaced_part_ids,
+            "used_height_mm": result.used_height,
+        }
+    )
+    save_job(job)
+    submit(partial(analyze_nested_worker, job_id), job_id)
     return public_job(job)
 
 
@@ -390,10 +691,10 @@ def get_job(job_id: str):
 @app.put("/api/jobs/{job_id}/params", dependencies=[Depends(require_key)])
 def set_params(job_id: str, params: JobParams):
     job = load_job(job_id)
-    if job["status"] in ("analyzing", "generating"):
+    if job["status"] in BUSY_STATUSES:
         raise HTTPException(409, "Aguarde o processamento terminar")
-    if job["status"] == "failed" and not job.get("analysis"):
-        raise HTTPException(409, "A análise do arquivo falhou; envie o arquivo novamente")
+    if not job.get("analysis"):
+        raise HTTPException(409, "Posicione as peças (Nestear) antes de definir operações")
     data = params.model_dump(exclude_none=True)
     changes = {"params": data}
     if job["status"] == "ready":
@@ -404,13 +705,13 @@ def set_params(job_id: str, params: JobParams):
 @app.post("/api/jobs/{job_id}/generate", dependencies=[Depends(require_key)], status_code=202)
 def generate(job_id: str):
     job = load_job(job_id)
-    if job["status"] in ("analyzing", "generating"):
+    if job["status"] in BUSY_STATUSES:
         raise HTTPException(409, "Já está em processamento")
     if not job.get("params"):
         raise HTTPException(409, "Defina os parâmetros antes de gerar")
     JobParams.model_validate(job["params"])
     job = update_job(job_id, status="generating", error=None)
-    submit(generate_worker, job_id)
+    submit(partial(generate_worker, job_id), job_id)
     return public_job(job)
 
 
@@ -420,18 +721,19 @@ def duplicate(job_id: str):
     new_id = "j_" + uuid.uuid4().hex[:12]
     new_dir = JOBS_DIR / new_id
     new_dir.mkdir(parents=True)
-    src_dir = JOBS_DIR / job_id
-    for name in (source["input_file"], "preview.svg"):
-        if (src_dir / name).exists():
-            shutil.copy(src_dir / name, new_dir / name)
+    src_dir = job_path(job_id)
+    for part in source["parts"]:
+        if (src_dir / part["file"]).exists():
+            shutil.copy(src_dir / part["file"], new_dir / part["file"])
+    if (src_dir / "preview.svg").exists():
+        shutil.copy(src_dir / "preview.svg", new_dir / "preview.svg")
     job = dict(source)
     job.update(
         {
             "id": new_id,
-            "name": source["name"],
             "created_at": now(),
             "updated_at": now(),
-            "status": "ready_for_params" if source.get("analysis") else "analyzing",
+            "status": "ready_for_params" if source.get("analysis") else "parts_ready",
             "estimate": None,
             "warnings": [],
             "error": None,
@@ -444,8 +746,6 @@ def duplicate(job_id: str):
     job.pop("result_operations", None)
     job.pop("colors", None)
     save_job(job)
-    if job["status"] == "analyzing":
-        submit(analyze_worker, new_id)
     return public_job(job)
 
 

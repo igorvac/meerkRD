@@ -12,9 +12,21 @@ This module is the only place that imports the MeerK40t kernel. Everything it
 does could be expressed as console commands, but driving the element tree
 directly keeps the layer -> operation mapping deterministic and avoids string
 interpolation of user-controlled values into the console.
+
+A project can contain several uploaded files ("parts"), each cut any number
+of times ("instances" - quantity). Every instance gets its own copy of the
+part's geometry (loaded fresh, positioned by the nesting layout computed
+separately in ``service/core/nesting.py``) and every individual shape gets a
+stable id of the form ``<part_id>#<instance_index>:<shape_index>``, assigned
+by this module rather than left to MeerK40t's own counter, so that an
+element-to-operation assignment made by the user against one analysis run
+still refers to the same shape in a later run (a fresh subprocess/kernel
+each time) as long as parts are loaded in the same order - which every
+action here does.
 """
 
 import json
+import math
 import os
 import sys
 import traceback
@@ -58,6 +70,7 @@ RASTER_DIRECTIONS = {
 }
 
 OP_ID_KEY = "svc_op_id"
+LEAF_TYPES_SKIP = ("file", "group", "branch elems", "branch ops", "branch reg", "root")
 
 
 class JobError(Exception):
@@ -130,19 +143,118 @@ def color_hex(color):
         return None
 
 
-def element_info(elements):
-    elements.validate_ids()
-    infos = []
-    for node in elements.elems():
-        if node.type in ("file", "group"):
+# --------------------------------------------------------------------------- loading & placement
+def leaf_elements_under(node):
+    """Depth-first descendant leaf elements (skips file/group containers)."""
+    if node.type not in LEAF_TYPES_SKIP:
+        yield node
+        return
+    for child in list(node.children):
+        yield from leaf_elements_under(child)
+
+
+def load_part_instance(kernel, path, part_id, instance_index):
+    """
+    Load one copy of a part's file into the current document and give every
+    shape in it a stable, self-describing id. Returns the wrapping file node.
+    """
+    elements = kernel.elements
+    before = set(elements.elem_branch.children)
+    if not elements.load(str(path)):
+        raise JobError("load_failed", f"Não foi possível abrir {path.name}.")
+    added = [c for c in elements.elem_branch.children if c not in before]
+    if not added:
+        raise JobError("load_failed", f"O arquivo {path.name} não adicionou geometria.")
+    file_node = added[-1]
+    for shape_index, leaf in enumerate(leaf_elements_under(file_node)):
+        leaf.id = f"{part_id}#{instance_index}:{shape_index}"
+    return file_node
+
+
+def leaves_bounds(leaves):
+    boxes = [l.bounds for l in leaves if l.bounds is not None]
+    if not boxes:
+        return None
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def position_part_instance(elements, file_node, placement):
+    """
+    placement: {"x_mm": .., "y_mm": .., "rotated": bool} - x/y are the target
+    top-left corner of the instance's bounding box, in mm, in the document's
+    native (pre-device-transform) coordinate space.
+    """
+    leaves = list(leaf_elements_under(file_node))
+    if not leaves:
+        return
+    bounds = leaves_bounds(leaves)
+    if bounds is None:
+        return
+    if placement.get("rotated"):
+        min_x, min_y, max_x, max_y = bounds
+        cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+        for leaf in leaves:
+            leaf.matrix.post_rotate(math.pi / 2, cx, cy)
+            leaf.modified()
+        bounds = leaves_bounds(leaves)
+    min_x, min_y, _, _ = bounds
+    target_x = float(placement["x_mm"]) * UNITS_PER_MM
+    target_y = float(placement["y_mm"]) * UNITS_PER_MM
+    dx = target_x - min_x
+    dy = target_y - min_y
+    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+        elements.translate_node(file_node, dx, dy)
+
+
+def load_all_parts(kernel, job_dir, parts, placements=None):
+    """
+    parts: [{"id":..., "file": "relative/path.dxf"}]
+    placements: optional [{"part_id":..., "instance_index":..., "x_mm":..., "y_mm":..., "rotated":...}]
+                one entry per instance to load; if omitted, each part is
+                loaded exactly once, unplaced (used for the lightweight
+                per-part analysis before nesting has run).
+    Returns the flat list of leaf element nodes across every loaded instance,
+    in load order.
+    """
+    elements = kernel.elements
+    leaves = []
+    if placements is None:
+        for part in parts:
+            path = job_dir / part["file"]
+            file_node = load_part_instance(kernel, path, part["id"], 0)
+            leaves.extend(leaf_elements_under(file_node))
+        return leaves
+
+    by_part = {p["id"]: p for p in parts}
+    for placement in sorted(placements, key=lambda p: (p["part_id"], p["instance_index"])):
+        part = by_part.get(placement["part_id"])
+        if part is None:
             continue
+        path = job_dir / part["file"]
+        file_node = load_part_instance(kernel, path, part["id"], placement["instance_index"])
+        position_part_instance(elements, file_node, placement)
+        leaves.extend(leaf_elements_under(file_node))
+    return leaves
+
+
+# --------------------------------------------------------------------------- element/operation info
+def element_info(leaves):
+    infos = []
+    for node in leaves:
         try:
             bounds = node.bounds
         except Exception:  # noqa: BLE001 - bounds can fail on degenerate nodes
             bounds = None
+        part_id, _, _ = str(node.id).partition("#")
         infos.append(
             {
                 "id": node.id,
+                "part_id": part_id,
                 "type": node.type,
                 "layer": node_layer(node),
                 "stroke": color_hex(getattr(node, "stroke", None)),
@@ -167,6 +279,12 @@ def suggested_type(node_info):
 
 
 def detect_operations(infos):
+    """
+    Groups elements by layer name (falling back to stroke color), merging
+    same-named layers across every part/instance - so e.g. every uploaded
+    part's own "CUT" layer becomes one combined Cut operation. Returns both
+    the operation groups and a default element_id -> operation_id mapping.
+    """
     groups = {}
     for info in infos:
         key = ("layer", info["layer"]) if info["layer"] else ("color", info["stroke"] or "")
@@ -177,17 +295,24 @@ def detect_operations(infos):
                 "type": suggested_type(info),
                 "color": info["stroke"] or info["fill"] or "#000000",
                 "elements": 0,
+                "element_ids": [],
                 "element_types": set(),
             },
         )
         group["elements"] += 1
+        group["element_ids"].append(info["id"])
         group["element_types"].add(info["type"].replace("elem ", ""))
     result = []
+    assignments = {}
     for index, group in enumerate(groups.values()):
+        op_id = f"op_{index + 1}"
         group["element_types"] = sorted(group["element_types"])
-        group["id"] = f"op_{index + 1}"
+        group["id"] = op_id
+        for eid in group["element_ids"]:
+            assignments[eid] = op_id
+        del group["element_ids"]
         result.append(group)
-    return result
+    return result, assignments
 
 
 def union_bbox(infos):
@@ -202,23 +327,50 @@ def union_bbox(infos):
     ]
 
 
-def analyze(kernel, job_dir, request):
+# --------------------------------------------------------------------------- actions
+def analyze_part(kernel, job_dir, request):
+    """Lightweight, single-part analysis used right after a file is uploaded:
+    just enough (bounding box, element/layer summary) to add it to the parts
+    list and feed the nesting step. Does not touch the device profile."""
+    part = request["part"]
+    leaves = load_all_parts(kernel, job_dir, [part], placements=None)
+    if not leaves:
+        raise JobError("empty_file", "O arquivo não contém geometria utilizável.")
+    infos = element_info(leaves)
+    bbox = union_bbox(infos)
+    if bbox is None:
+        raise JobError("empty_file", "O arquivo não contém geometria com dimensões válidas.")
+    layers = sorted({i["layer"] for i in infos if i["layer"]})
+    return {
+        "elements": len(infos),
+        "layers": layers,
+        "bbox_mm": bbox,
+        "width_mm": bbox[2] - bbox[0],
+        "height_mm": bbox[3] - bbox[1],
+    }
+
+
+def analyze_nested(kernel, job_dir, request):
+    """Loads every part instance at its nested position and reports the
+    combined element list, suggested (default) operation grouping, and a
+    preview.svg of the whole laid-out sheet."""
     profile = request["profile"]
     configure_device(kernel, profile)
     elements = kernel.elements
-    input_path = job_dir / request["input"]
-    if not elements.load(str(input_path)):
-        raise JobError("load_failed", "O arquivo não pôde ser interpretado.")
-    infos = element_info(elements)
-    if not infos:
-        raise JobError("empty_file", "O arquivo não contém geometria utilizável.")
+    leaves = load_all_parts(kernel, job_dir, request["parts"], request.get("placements"))
+    if not leaves:
+        raise JobError("empty_file", "Nenhuma peça pôde ser carregada.")
+    elements.validate_ids()  # covers any node our own numbering didn't reach (e.g. regmarks)
+    infos = element_info(leaves)
+    operations, assignments = detect_operations(infos)
     preview = job_dir / "preview.svg"
     elements.save(str(preview), version="plain")
     bbox = union_bbox(infos)
     bed = profile.get("bed_mm", [900, 600])
     return {
         "elements": infos,
-        "operations": detect_operations(infos),
+        "operations": operations,
+        "assignments": assignments,
         "bbox_mm": bbox,
         "bed_mm": bed,
         "outside_bed": bool(
@@ -229,23 +381,16 @@ def analyze(kernel, job_dir, request):
     }
 
 
-def matches(info, source):
-    if "layer" in source:
-        return info["layer"] == source["layer"]
-    if "color" in source:
-        return (info["stroke"] or "").lower() == str(source["color"]).lower()
-    if "element_ids" in source:
-        return info["id"] in source["element_ids"]
-    return False
-
-
-def build_operations(kernel, params, infos):
+def build_operations(kernel, params):
+    """Rebuilds the operations tree from explicit params.operations. Element
+    assignment happens separately in assign_elements() - no layer/color
+    re-matching, so a manual reassignment always wins."""
     elements = kernel.elements
     for op in list(elements.ops()):
         op.remove_node(children=True, destroy=True)
-    nodes_by_id = {n.id: n for n in elements.elems() if n.type not in ("file", "group")}
     ops_out = []
     ordered = sorted(params["operations"], key=lambda o: o.get("order", 0))
+    op_nodes = {}
     for spec in ordered:
         op_type = OP_TYPES.get(spec.get("type", "cut"))
         if op_type is None:
@@ -270,15 +415,20 @@ def build_operations(kernel, params, infos):
         if color:
             op.color = Color(color)
         op.settings[OP_ID_KEY] = spec["id"]
-        count = 0
-        for info in infos:
-            if matches(info, spec.get("source", {})):
-                node = nodes_by_id.get(info["id"])
-                if node is not None:
-                    op.add_reference(node)
-                    count += 1
-        ops_out.append({"id": spec["id"], "elements": count, "enabled": op.output})
-    return ops_out
+        op_nodes[spec["id"]] = op
+        ops_out.append({"id": spec["id"], "elements": 0, "enabled": op.output})
+    ops_by_id = {o["id"]: o for o in ops_out}
+    return op_nodes, ops_by_id
+
+
+def assign_elements(elements_by_id, op_nodes, ops_by_id, assignments):
+    for element_id, op_id in assignments.items():
+        node = elements_by_id.get(element_id)
+        op = op_nodes.get(op_id)
+        if node is None or op is None:
+            continue
+        op.add_reference(node)
+        ops_by_id[op_id]["elements"] += 1
 
 
 def apply_optimization(kernel, params):
@@ -401,7 +551,7 @@ def path_svg(device, cutcodes, ops_out, bed, out_path):
     return colors
 
 
-def warnings_for(profile, params, infos, ops_out, bbox):
+def warnings_for(profile, params, infos, ops_out, bbox, unplaced_parts=None):
     warnings = []
     bed = profile.get("bed_mm", [900, 600])
     if bbox and (bbox[0] < 0 or bbox[1] < 0 or bbox[2] > bed[0] or bbox[3] > bed[1]):
@@ -410,6 +560,18 @@ def warnings_for(profile, params, infos, ops_out, bbox):
                 "code": "outside_bed",
                 "severity": "critical",
                 "message": "Há geometria fora da área útil da máquina.",
+            }
+        )
+    if unplaced_parts:
+        warnings.append(
+            {
+                "code": "nesting_overflow",
+                "severity": "critical",
+                "count": len(unplaced_parts),
+                "message": (
+                    f"{len(unplaced_parts)} peça(s) não couberam na mesa e não serão "
+                    "incluídas: reduza a quantidade ou use uma chapa maior."
+                ),
             }
         )
     text_nodes = sum(1 for i in infos if i["type"] == "elem text")
@@ -474,12 +636,16 @@ def generate(kernel, job_dir, request):
     params = request["params"]
     device = configure_device(kernel, profile)
     elements = kernel.elements
-    input_path = job_dir / request["input"]
-    if not elements.load(str(input_path)):
-        raise JobError("load_failed", "O arquivo não pôde ser interpretado.")
-    infos = element_info(elements)
-    ops_out = build_operations(kernel, params, infos)
-    infos = element_info(elements)
+    leaves = load_all_parts(kernel, job_dir, request["parts"], request.get("placements"))
+    if not leaves:
+        raise JobError("empty_file", "Nenhuma peça pôde ser carregada.")
+    elements.validate_ids()
+    infos = element_info(leaves)
+    elements_by_id = {info["id"]: node for info, node in zip(infos, leaves)}
+    op_nodes, ops_by_id = build_operations(kernel, params)
+    assign_elements(elements_by_id, op_nodes, ops_by_id, params.get("assignments", {}))
+    infos = element_info(leaves)
+    ops_out = list(ops_by_id.values())
     optimized = apply_optimization(kernel, params)
     steps = "clear copy preprocess validate blob"
     if optimized:
@@ -505,7 +671,7 @@ def generate(kernel, job_dir, request):
         "estimate": stats["estimate"],
         "colors": colors,
         "bbox_mm": bbox,
-        "warnings": warnings_for(profile, params, infos, ops_out, bbox),
+        "warnings": warnings_for(profile, params, infos, ops_out, bbox, request.get("unplaced_parts")),
         "artifacts": {
             "rd": "job.rd",
             "path_svg": "path.svg",
@@ -513,6 +679,13 @@ def generate(kernel, job_dir, request):
             "rd_bytes": rd.stat().st_size,
         },
     }
+
+
+ACTIONS = {
+    "analyze_part": analyze_part,
+    "analyze_nested": analyze_nested,
+    "generate": generate,
+}
 
 
 def main(argv):
@@ -527,12 +700,10 @@ def main(argv):
     kernel = None
     try:
         kernel = boot_kernel(log)
-        if request["action"] == "analyze":
-            result.update(analyze(kernel, job_dir, request))
-        elif request["action"] == "generate":
-            result.update(generate(kernel, job_dir, request))
-        else:
+        handler = ACTIONS.get(request.get("action"))
+        if handler is None:
             raise JobError("bad_request", f"Ação desconhecida: {request.get('action')}")
+        result.update(handler(kernel, job_dir, request))
         result["ok"] = True
     except JobError as e:
         result["error"] = {"code": e.code, "message": str(e)}
