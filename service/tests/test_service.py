@@ -244,3 +244,32 @@ def test_api_rejects_bad_upload(client):
         data={"profile_id": "ruida-900x600"},
     )
     assert res.status_code == 400
+
+
+def test_changing_the_machine_keeps_parts_and_resets_the_layout(client):
+    client.post("/api/machine-profiles", json={**PROFILE_PAYLOAD, "id": "ruida-small", "name": "Pequena", "bed_mm": [300, 200]})
+    res = upload(client, [("a.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.put(f"/api/jobs/{job_id}/parts/a", json={"quantity": 2})
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
+    assert job["analysis"]["bed_mm"] == [900, 600]
+
+    assert client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "nope"}).status_code == 400
+
+    res = client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "ruida-small"})
+    assert res.status_code == 200, res.text
+    job = res.json()
+    assert job["profile_id"] == "ruida-small"
+    assert job["status"] == "parts_ready"
+    assert job["analysis"] is None and job["params"] is None
+    assert job["parts"][0]["quantity"] == 2  # part settings survive
+
+    client.post(f"/api/jobs/{job_id}/nest")
+    job = wait_status(client, job_id, {"ready_for_params"})
+    assert job["analysis"]["bed_mm"] == [300, 200]
+
+    # Same id without force is a no-op; with force it re-nests (profile edited).
+    assert client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "ruida-small"}).json()["status"] == "ready_for_params"
+    assert client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "ruida-small", "force": True}).json()["status"] == "parts_ready"

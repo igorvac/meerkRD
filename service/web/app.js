@@ -98,7 +98,10 @@ function toast(message, action) {
   toast.timer = setTimeout(() => (root.innerHTML = ""), action ? 6000 : 3500);
 }
 function profile() {
-  return state.profiles.find((p) => p.id === ($("profile-select").value || state.job?.profile_id)) || state.profiles[0];
+  // With a job open, the job's machine is the truth (the canvas, validation
+  // and the .rd all use it); the selector only leads until a job exists.
+  const id = state.job?.profile_id || $("profile-select").value;
+  return state.profiles.find((p) => p.id === id) || state.profiles[0];
 }
 function setStatus(kind, text) {
   const pill = $("status-pill");
@@ -150,9 +153,9 @@ function renderProfiles() {
   const sel = $("profile-select");
   const current = state.job?.profile_id || sel.value || state.profiles[0]?.id;
   sel.innerHTML = state.profiles.map((p) => `<option value="${esc(p.id)}"${p.id === current ? " selected" : ""}>${esc(p.name)}</option>`).join("");
-  sel.disabled = !!state.job;
+  sel.disabled = !!state.job && BUSY_STATUSES.has(state.job.status);
   const p = profile();
-  $("profile-hint").textContent = p ? `Mesa ${p.bed_mm[0]} × ${p.bed_mm[1]} mm · ${p.job_reference === "anchor" ? "âncora" : "não-âncora"}${state.job ? " · para trocar de máquina, crie um novo trabalho" : ""}` : "";
+  $("profile-hint").textContent = p ? `Mesa ${p.bed_mm[0]} × ${p.bed_mm[1]} mm · ${p.job_reference === "anchor" ? "âncora" : "não-âncora"}${state.job?.analysis ? " · trocar de máquina refaz o nesting" : ""}` : "";
   const presetSel = $("preset-select");
   presetSel.innerHTML = `<option value="">Aplicar preset de material…</option>` + state.presets.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
 }
@@ -899,6 +902,33 @@ async function patchPart(partId, patch) {
     renderAll();
   } catch (e) { toast(`Não foi possível atualizar a peça: ${e.message}`); }
 }
+function hasManualAssignments(job) {
+  if (!job?.params || !job?.analysis) return false;
+  const auto = job.analysis.assignments || {};
+  const cur = job.params.assignments || {};
+  const autoOps = new Set((job.analysis.operations || []).map((o) => o.id));
+  return job.params.operations.some((o) => !autoOps.has(o.id)) || Object.keys(cur).some((k) => cur[k] !== auto[k]);
+}
+async function changeJobProfile(profileId, { force = false } = {}) {
+  const job = state.job;
+  if (!job) return;
+  const target = state.profiles.find((p) => p.id === profileId);
+  if (!target) return;
+  if (!force && profileId === job.profile_id) return;
+  if (hasManualAssignments(job) && !confirm(`Trocar para "${target.name}" refaz o nesting e descarta as atribuições de cor feitas à mão. Continuar?`)) {
+    renderProfiles();
+    return;
+  }
+  try {
+    state.job = await api(`/api/jobs/${job.id}/profile`, { method: "PUT", json: { profile_id: profileId, force } });
+    state.selected.clear();
+    state.viewJobId = null;
+    state.step = 1;
+    loadMachineForm(target);
+    renderAll();
+    if (state.job.status === "parts_ready") toast(`Máquina: ${target.name}. Aperte "Nestear peças" para posicionar na nova mesa.`);
+  } catch (e) { toast(`Não foi possível trocar a máquina: ${e.message}`); renderProfiles(); }
+}
 async function runNest() {
   const job = state.job;
   if (!job) return;
@@ -1003,7 +1033,9 @@ function bind() {
     else upload(e.dataTransfer.files);
   });
   $("profile-select").onchange = () => {
-    loadMachineForm(state.profiles.find((p) => p.id === $("profile-select").value));
+    const id = $("profile-select").value;
+    if (state.job) return changeJobProfile(id);
+    loadMachineForm(state.profiles.find((p) => p.id === id));
     renderProfiles();
   };
   $("preset-select").onchange = (e) => { applyPreset(e.target.value); e.target.value = ""; };
@@ -1025,8 +1057,13 @@ function bind() {
       state.profiles = await api("/api/machine-profiles");
       state.editingProfileId = payload.id;
       $("profile-select").value = payload.id;
-      renderProfiles();
       $("machine-save-status").textContent = `Salvo às ${new Date().toLocaleTimeString("pt-BR")}.`;
+      if (state.job && !BUSY_STATUSES.has(state.job.status)) {
+        // The open job follows the machine you just saved: a different one
+        // switches it, the same one (edited bed, origin...) re-nests it.
+        await changeJobProfile(payload.id, { force: payload.id === state.job.profile_id && !!state.job.analysis });
+      }
+      renderProfiles();
       toast(`Máquina "${payload.name}" salva.`);
     } catch (e) { toast(`Não foi possível salvar: ${e.message}`); }
   };

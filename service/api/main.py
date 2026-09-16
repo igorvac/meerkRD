@@ -155,6 +155,11 @@ class PartUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+class JobProfileUpdate(BaseModel):
+    profile_id: str
+    force: bool = False  # re-nest even if the id is unchanged (profile was edited)
+
+
 class MachineProfile(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,40}$")
     name: str
@@ -598,6 +603,24 @@ def update_part(job_id: str, part_id: str, patch: PartUpdate):
                 p["enabled"] = patch.enabled
     if not found:
         raise HTTPException(404, "Peça não encontrada")
+    job = reset_nesting_state(job)
+    save_job(job)
+    return public_job(job)
+
+
+@app.put("/api/jobs/{job_id}/profile", dependencies=[Depends(require_key)])
+def update_job_profile(job_id: str, body: JobProfileUpdate):
+    """Switches the job to another machine. The bed size drives the nesting
+    and element ids, so this invalidates the layout exactly like editing the
+    part list does - parts, quantities and rotation flags are kept."""
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    get_profile(body.profile_id)
+    if body.profile_id == job["profile_id"] and not body.force:
+        return public_job(job)
+    job = dict(job)
+    job["profile_id"] = body.profile_id
     job = reset_nesting_state(job)
     save_job(job)
     return public_job(job)

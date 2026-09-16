@@ -78,6 +78,11 @@ Variáveis de ambiente:
    `job.rd`, `path.svg` e `stats.json`.
 6. `GET /api/jobs/{id}/file` baixa o `.rd` (`<nome>_<perfil>.rd`).
 
+`PUT /api/jobs/{id}/profile` troca a máquina de um trabalho existente (o
+seletor "Máquina salva" faz isso com um trabalho aberto; salvar o perfil em uso
+com a mesa editada re-nesteia via `force`). As peças, quantidades e rotação
+ficam; layout e atribuições voltam do zero, porque a mesa muda.
+
 Qualquer mudança nas peças (adicionar/remover/quantidade/girar) invalida o nesting
 e a análise (`params`/`analysis` voltam a `null`, status volta a `parts_ready` ou
 `analyzing_parts`) — os ids dependem da ordem exata de carregamento, então uma
