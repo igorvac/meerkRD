@@ -101,6 +101,7 @@ def configure_device(kernel, profile):
         device.home_corner = str(profile["home_corner"])
     if "magic" in profile and hasattr(device, "magic"):
         device.magic = int(profile["magic"])
+    device.job_reference = str(profile.get("job_reference", "absolute"))
     device.realize()
     return device
 

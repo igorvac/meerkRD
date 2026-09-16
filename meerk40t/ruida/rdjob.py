@@ -554,6 +554,19 @@ class RDJob:
         self.first_layer = True
         self.first_move = True
 
+        # "absolute": every job command is referenced to the controller's
+        # machine-zero (Ref Point 2, D8 10) - this is MeerK40t's historical
+        # behaviour and requires bedwidth/bedheight/home_corner to exactly
+        # match the physical machine.
+        # "anchor": the job is referenced to whatever "Origin"/piece-zero
+        # point the operator has set on the console (Ref Point 1, D8 11),
+        # matching how RDWorks generates files. Coordinates are re-based so
+        # the job's own bounding-box corner closest to home becomes (0,0);
+        # the controller then offsets everything by the live anchor point.
+        self.reference_mode = "absolute"
+        self.anchor_dx = 0
+        self.anchor_dy = 0
+
         self.x = 0.0
         self.y = 0.0
         self.z = 0.0
@@ -1405,17 +1418,31 @@ class RDJob:
         self.low_power_warning = False
         self.high_power_warning = False
         self.first_layer = True
+        b = self._calculate_layer_bounds(data)
+        min_x, min_y, max_x, max_y = b
+        if self.reference_mode == "anchor":
+            # Re-base the job onto its own bounding-box corner closest to
+            # home; the controller adds the live console origin on top.
+            self.anchor_dx, self.anchor_dy = min_x, min_y
+        else:
+            self.anchor_dx = self.anchor_dy = 0
+        min_x -= self.anchor_dx
+        max_x -= self.anchor_dx
+        min_y -= self.anchor_dy
+        max_y -= self.anchor_dy
+
         # Optional: Set Tick count.
-        self.ref_point_2()  # abs_pos
-        self.set_absolute()
-        self.ref_point_set()
+        if self.reference_mode == "anchor":
+            self.ref_point_1()  # Anchor Point - user-set "piece zero"
+        else:
+            self.ref_point_2()  # abs_pos - Machine Zero
+            self.set_absolute()
+            self.ref_point_set()
         self.enable_block_cutting(0)
         # Optional: Set File Property 1
         self.start_process()
         self.feed_repeat(0, 0)
         self.set_feed_auto_pause(0)
-        b = self._calculate_layer_bounds(data)
-        min_x, min_y, max_x, max_y = b
         self.process_top_left(max_x, min_y)
         self.process_bottom_right(min_x, max_y)
         self.document_min_point(max_x, min_y)  # Unknown

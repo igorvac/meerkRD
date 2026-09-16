@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from meerk40t.ruida.rdjob import RDJob, determine_magic_via_histogram, parse_commands
+from meerk40t.ruida.rdjob import (
+    RDJob,
+    decode32,
+    determine_magic_via_histogram,
+    parse_commands,
+)
 from service.core.runner import run_job
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +101,45 @@ def test_generate_warns_on_bad_speed(job_dir):
     result = run_job(job_dir, "generate", "input.dxf", PROFILE, params)
     assert result["ok"]
     assert any(w["code"] == "speed_too_high" for w in result["warnings"])
+
+
+def test_generate_anchor_mode_rebases_to_bbox_corner(job_dir):
+    """
+    'anchor' mode must emit Ref Point 1 (D8 11), not Ref Point 2 (D8 10), and
+    must not depend on bed_mm/home_corner for placement: the job is re-based
+    onto its own bounding-box corner so it's small offsets from (0,0) that
+    the controller then adds to whatever origin point is live on the console
+    (the RDWorks-compatible "piece zero" workflow).
+    """
+    profile = dict(PROFILE, job_reference="anchor", bed_mm=[10, 10])  # bed too small to matter
+    result = run_job(job_dir, "generate", "input.dxf", profile, PARAMS)
+    assert result["ok"], result.get("error")
+    data = (job_dir / "job.rd").read_bytes()
+    magic = determine_magic_via_histogram(data)
+    job = RDJob()
+    job.set_magic(magic)
+    cmds = list(parse_commands(job.unswizzle(data)))
+    assert cmds[0] == b"\xd8\x11", "anchor mode must open with Ref Point 1 (Anchor Point)"
+    assert b"\xd8\x10" not in cmds, "anchor mode must never reference machine-absolute zero"
+
+    def abs_coords(cmd):
+        if cmd[0] == 0x88:  # MoveAbs
+            return decode32(cmd[1:6]), decode32(cmd[6:11])
+        if cmd[0] == 0xA8:  # CutAbs
+            return decode32(cmd[1:6]), decode32(cmd[6:11])
+        return None
+
+    xs, ys = [], []
+    for c in cmds:
+        pos = abs_coords(c)
+        if pos:
+            xs.append(pos[0])
+            ys.append(pos[1])
+    assert xs and ys
+    # Re-based near (0,0): nothing should be anywhere near the (deliberately
+    # tiny, and therefore obviously-exceeded-if-unmodified) 10x10mm bed.
+    assert min(xs) == 0 or min(ys) == 0, "job should be anchored at its own bbox corner"
+    assert max(max(xs), max(ys)) < 200_000, "coordinates must be small offsets, not absolute bed-space"
 
 
 def test_generate_fails_without_elements(job_dir):

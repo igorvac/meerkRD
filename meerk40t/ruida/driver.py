@@ -36,6 +36,11 @@ class RuidaDriver(Parameters):
         self.events = service.channel(f"{service.safe_label}/events")
         self.native_x = 0
         self.native_y = 0
+        # Re-computed by plot_start() from the job's reference_mode; 0 in
+        # absolute mode (the default) so this is a no-op until anchor mode
+        # is requested.
+        self._anchor_dx = 0
+        self._anchor_dy = 0
 
         self.name = str(self.service)
 
@@ -43,6 +48,9 @@ class RuidaDriver(Parameters):
         send = service.channel(f"{name}/send")
         self.controller = RuidaController(self.service, send)
         self.controller.job.set_magic(service.magic)
+        self.controller.job.reference_mode = service.setting(
+            str, "job_reference", "absolute"
+        )
 
         self.recv = service.channel(f"{name}/recv", pure=True)
         self.recv.watch(self.controller.recv)
@@ -177,6 +185,11 @@ class RuidaDriver(Parameters):
         # Write layer header information.
         self.controller.start_record()
         self.controller.job.write_header(self.queue)
+        # write_header() just computed (and possibly re-based) the job's
+        # bounds; every absolute move/cut emitted below must use the same
+        # offset so the file stays internally consistent.
+        self._anchor_dx = self.controller.job.anchor_dx
+        self._anchor_dy = self.controller.job.anchor_dy
         first = True
         last_settings = None
         total = len(self.queue)
@@ -559,10 +572,17 @@ class RuidaDriver(Parameters):
             self.speed_dirty = False
         dx = x - self.native_x
         dy = y - self.native_y
+        # dx/dy are deltas, unaffected by a constant offset; only the
+        # absolute fallback (first move, or a jump too large to encode as
+        # relative) needs re-basing onto the job's anchor. native_x/native_y
+        # keep tracking the *unshifted* device-space position so every other
+        # comparison in plot_start() (against q.start/q.end) stays valid.
+        ox = x - self._anchor_dx
+        oy = y - self._anchor_dy
         if cut:
-            job.mark(x, y, dx, dy)
+            job.mark(ox, oy, dx, dy)
         else:
-            job.jump(x, y, dx, dy)
+            job.jump(ox, oy, dx, dy)
         self.native_x = x
         self.native_y = y
         new_current = self.service.current

@@ -134,6 +134,7 @@ class MachineProfile(BaseModel):
     flip_y: bool = False
     swap_xy: bool = False
     magic: int = 136
+    job_reference: Literal["absolute", "anchor"] = "absolute"
     max_speed_mm_s: Optional[float] = None
     min_power_pct: Optional[float] = None
     notes: str = ""

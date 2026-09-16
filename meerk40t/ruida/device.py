@@ -208,6 +208,29 @@ class RuidaDevice(Service, Status):
                 "subsection": "_50_" + _("Home position"),
             },
             {
+                "attr": "job_reference",
+                "object": self,
+                "default": "absolute",
+                "type": str,
+                "style": "combo",
+                "choices": [
+                    "absolute",
+                    "anchor",
+                ],
+                "label": _("Job Reference Point"),
+                "tip": _(
+                    "'absolute': every job is positioned from the machine's "
+                    "home (bedwidth/bedheight/home-corner must exactly match "
+                    "the physical machine). 'anchor': the job is positioned "
+                    "relative to whatever origin point the operator has set "
+                    "on the controller console (same convention RDWorks "
+                    "uses), so jogging to the material and pressing "
+                    "'Origin' before running the job works as expected."
+                ),
+                "section": "_10_" + _("Configuration"),
+                "subsection": "_50_" + _("Home position"),
+            },
+            {
                 "attr": "interpolate",
                 "object": self,
                 "default": 500,
