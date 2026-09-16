@@ -66,107 +66,142 @@
     </main>
 
     <aside class="inspector" id="inspector">
-      <section class="section" id="sec-machine">
-        <div class="section-head"><h2>Máquina</h2></div>
-        <div class="field">
-          <label for="profile-select">Máquina salva</label>
-          <select class="control" id="profile-select"></select>
-          <span class="hint" id="profile-hint"></span>
-        </div>
-        <div id="machine-form" style="display:flex;flex-direction:column;gap:12px">
-          <div class="field">
-            <label for="m-name">Nome da máquina</label>
-            <input class="control" id="m-name" type="text" placeholder="Ex.: Laser do laboratório" />
-          </div>
-          <div class="control-row" style="grid-template-columns:1fr 1fr">
+      <section class="step-panel" id="panel-1" data-step="1">
+        <button type="button" class="step-head" data-open-step="1" aria-expanded="false" aria-controls="panel-1-body">
+          <span class="num">1</span>
+          <span class="step-head-text"><span class="step-title">Máquina e arquivo</span><span class="step-summary" id="panel-1-summary"></span></span>
+          <span class="step-chev" id="panel-1-chev"></span>
+        </button>
+        <div class="step-body" id="panel-1-body">
+          <div class="section" id="sec-machine">
+            <div class="section-head"><h2>Máquina</h2></div>
             <div class="field">
-              <label for="m-bed-w">Largura da mesa</label>
-              <div class="unit-input"><input class="control" id="m-bed-w" type="number" min="10" step="1" /><span class="unit">mm</span></div>
+              <label for="profile-select">Máquina salva</label>
+              <select class="control" id="profile-select"></select>
+              <span class="hint" id="profile-hint"></span>
             </div>
-            <div class="field">
-              <label for="m-bed-h">Altura da mesa</label>
-              <div class="unit-input"><input class="control" id="m-bed-h" type="number" min="10" step="1" /><span class="unit">mm</span></div>
-            </div>
-          </div>
-          <div class="field">
-            <label for="m-home">Canto de origem (home)</label>
-            <select class="control" id="m-home">
-              <option value="top-left">Superior esquerdo</option>
-              <option value="top-right">Superior direito</option>
-              <option value="bottom-left">Inferior esquerdo</option>
-              <option value="bottom-right">Inferior direito</option>
-              <option value="center">Centro</option>
-              <option value="auto">Automático</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Modo de referência</label>
-            <div class="segmented" id="m-reference">
-              <button type="button" class="seg-btn" data-value="anchor">Âncora</button>
-              <button type="button" class="seg-btn" data-value="absolute">Não-âncora</button>
-            </div>
-            <span class="hint" id="m-reference-hint"></span>
-          </div>
-          <details id="m-advanced">
-            <summary><span id="m-advanced-chev"></span> Avançado</summary>
-            <div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">
-              <div class="control-row">
-                <label class="toggle"><input type="checkbox" id="m-flip-x" /> Inverter X</label>
-                <label class="toggle"><input type="checkbox" id="m-flip-y" /> Inverter Y</label>
-                <label class="toggle"><input type="checkbox" id="m-swap-xy" /> Trocar X/Y</label>
+            <details id="machine-details">
+              <summary><span id="machine-chev"></span> Editar ou criar máquina</summary>
+              <div id="machine-form" style="display:flex;flex-direction:column;gap:12px;padding-top:8px">
+                <div class="field">
+                  <label for="m-name">Nome da máquina</label>
+                  <input class="control" id="m-name" type="text" placeholder="Ex.: Laser do laboratório" />
+                </div>
+                <div class="control-row" style="grid-template-columns:1fr 1fr">
+                  <div class="field">
+                    <label for="m-bed-w">Largura da mesa</label>
+                    <div class="unit-input"><input class="control" id="m-bed-w" type="number" min="10" step="1" /><span class="unit">mm</span></div>
+                  </div>
+                  <div class="field">
+                    <label for="m-bed-h">Altura da mesa</label>
+                    <div class="unit-input"><input class="control" id="m-bed-h" type="number" min="10" step="1" /><span class="unit">mm</span></div>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="m-home">Canto de origem (home)</label>
+                  <select class="control" id="m-home">
+                    <option value="top-left">Superior esquerdo</option>
+                    <option value="top-right">Superior direito</option>
+                    <option value="bottom-left">Inferior esquerdo</option>
+                    <option value="bottom-right">Inferior direito</option>
+                    <option value="center">Centro</option>
+                    <option value="auto">Automático</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Modo de referência</label>
+                  <div class="segmented" id="m-reference">
+                    <button type="button" class="seg-btn" data-value="anchor">Âncora</button>
+                    <button type="button" class="seg-btn" data-value="absolute">Não-âncora</button>
+                  </div>
+                  <span class="hint" id="m-reference-hint"></span>
+                </div>
+                <details id="m-advanced">
+                  <summary><span id="m-advanced-chev"></span> Avançado</summary>
+                  <div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">
+                    <div class="control-row">
+                      <label class="toggle"><input type="checkbox" id="m-flip-x" /> Inverter X</label>
+                      <label class="toggle"><input type="checkbox" id="m-flip-y" /> Inverter Y</label>
+                      <label class="toggle"><input type="checkbox" id="m-swap-xy" /> Trocar X/Y</label>
+                    </div>
+                    <div class="control-row">
+                      <div class="field"><label for="m-magic">Magic number</label><input class="control" id="m-magic" type="number" min="0" max="255" /></div>
+                      <div class="field"><label for="m-max-speed">Vel. máxima</label><div class="unit-input"><input class="control" id="m-max-speed" type="number" min="0" /><span class="unit">mm/s</span></div></div>
+                      <div class="field"><label for="m-min-power">Potência mínima</label><div class="unit-input"><input class="control" id="m-min-power" type="number" min="0" max="100" /><span class="unit">%</span></div></div>
+                    </div>
+                  </div>
+                </details>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" id="btn-new-machine">+ Nova máquina</button>
+                  <button class="btn primary" id="btn-save-machine">Salvar máquina</button>
+                </div>
+                <span class="hint" id="machine-save-status" aria-live="polite"></span>
               </div>
-              <div class="control-row">
-                <div class="field"><label for="m-magic">Magic number</label><input class="control" id="m-magic" type="number" min="0" max="255" /></div>
-                <div class="field"><label for="m-max-speed">Vel. máxima</label><div class="unit-input"><input class="control" id="m-max-speed" type="number" min="0" /><span class="unit">mm/s</span></div></div>
-                <div class="field"><label for="m-min-power">Potência mínima</label><div class="unit-input"><input class="control" id="m-min-power" type="number" min="0" max="100" /><span class="unit">%</span></div></div>
-              </div>
+            </details>
+          </div>
+
+          <div class="section" id="sec-parts">
+            <div class="section-head"><h2>Peças</h2><button class="btn sm ghost" id="btn-add-part" hidden>+ Adicionar peça</button></div>
+            <div id="parts-empty" class="muted">Nenhuma peça enviada. Use o botão no centro da tela ou arraste os arquivos.</div>
+            <div class="parts-list" id="parts-list"></div>
+            <div id="nest-box" hidden style="display:flex;flex-direction:column;gap:6px">
+              <button class="btn primary" id="btn-nest">Nestear peças</button>
+              <span class="hint" id="nest-hint"></span>
             </div>
-          </details>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn" id="btn-new-machine">+ Nova máquina</button>
-            <button class="btn primary" id="btn-save-machine">Salvar máquina</button>
           </div>
-          <span class="hint" id="machine-save-status" aria-live="polite"></span>
         </div>
       </section>
 
-      <section class="section" id="sec-parts">
-        <div class="section-head"><h2>Peças</h2><button class="btn sm ghost" id="btn-add-part" hidden>+ Adicionar peça</button></div>
-        <div id="parts-empty" class="muted">Nenhuma peça enviada.</div>
-        <div class="parts-list" id="parts-list"></div>
-        <div id="nest-box" hidden style="display:flex;flex-direction:column;gap:6px">
-          <button class="btn primary" id="btn-nest">Nestear peças</button>
-          <span class="hint" id="nest-hint"></span>
-        </div>
-      </section>
-
-      <section class="section" id="sec-ops" hidden>
-        <div class="section-head">
-          <h2>Operações</h2>
-          <select class="control" id="preset-select" style="width:auto;height:28px;padding:0 8px" title="Aplicar preset de material">
-            <option value="">Aplicar preset de material…</option>
-          </select>
-        </div>
-        <p class="small muted">Ordem de execução de cima para baixo. Clique numa operação para editar.</p>
-        <div class="op-list" id="op-list"></div>
-        <details id="opt-details">
-          <summary><span id="opt-chev"></span> Otimização do percurso</summary>
-          <div style="display:flex;flex-direction:column;gap:8px;padding-top:8px">
-            <label class="toggle"><input type="checkbox" id="opt-enabled" checked /> Otimizar ordem de corte</label>
-            <label class="toggle"><input type="checkbox" id="opt-inner" checked /> Cortar peças internas primeiro</label>
-            <label class="toggle"><input type="checkbox" id="opt-travel" checked /> Reduzir deslocamento em vazio</label>
+      <section class="step-panel" id="panel-2" data-step="2">
+        <button type="button" class="step-head" data-open-step="2" aria-expanded="false" aria-controls="panel-2-body">
+          <span class="num">2</span>
+          <span class="step-head-text"><span class="step-title">Operações</span><span class="step-summary" id="panel-2-summary"></span></span>
+          <span class="step-chev" id="panel-2-chev"></span>
+        </button>
+        <div class="step-body" id="panel-2-body">
+          <div class="section" id="sec-ops">
+            <div class="section-head">
+              <h2>Operações</h2>
+              <select class="control" id="preset-select" style="width:auto;height:28px;padding:0 8px" title="Aplicar preset de material">
+                <option value="">Aplicar preset de material…</option>
+              </select>
+            </div>
+            <p class="small muted">Ordem de execução de cima para baixo. Clique numa operação para editar; clique numa forma no desenho e numa cor da barra para mudar a operação dela.</p>
+            <div class="op-list" id="op-list"></div>
+            <details id="opt-details">
+              <summary><span id="opt-chev"></span> Otimização do percurso</summary>
+              <div style="display:flex;flex-direction:column;gap:8px;padding-top:8px">
+                <label class="toggle"><input type="checkbox" id="opt-enabled" checked /> Otimizar ordem de corte</label>
+                <label class="toggle"><input type="checkbox" id="opt-inner" checked /> Cortar peças internas primeiro</label>
+                <label class="toggle"><input type="checkbox" id="opt-travel" checked /> Reduzir deslocamento em vazio</label>
+              </div>
+            </details>
           </div>
-        </details>
+        </div>
       </section>
 
-      <section class="section" id="sec-result" hidden>
-        <div class="section-head"><h2>Resultado</h2></div>
-        <div id="result-body"></div>
+      <section class="step-panel" id="panel-3" data-step="3">
+        <button type="button" class="step-head" data-open-step="3" aria-expanded="false" aria-controls="panel-3-body">
+          <span class="num">3</span>
+          <span class="step-head-text"><span class="step-title">Resultado</span><span class="step-summary" id="panel-3-summary"></span></span>
+          <span class="step-chev" id="panel-3-chev"></span>
+        </button>
+        <div class="step-body" id="panel-3-body">
+          <div class="section" id="sec-result">
+            <div id="result-body"></div>
+          </div>
+        </div>
       </section>
 
-      <section class="section" id="sec-history">
-        <div class="section-head"><h2>Trabalhos recentes</h2></div>
-        <div class="history" id="history"></div>
+      <section class="step-panel aux" id="panel-history">
+        <button type="button" class="step-head" data-toggle-history aria-expanded="false" aria-controls="panel-history-body">
+          <span class="num" id="history-icon"></span>
+          <span class="step-head-text"><span class="step-title">Trabalhos recentes</span><span class="step-summary" id="panel-history-summary"></span></span>
+          <span class="step-chev" id="panel-history-chev"></span>
+        </button>
+        <div class="step-body" id="panel-history-body">
+          <div class="section"><div class="history" id="history"></div></div>
+        </div>
       </section>
     </aside>
 

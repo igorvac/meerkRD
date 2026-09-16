@@ -17,6 +17,7 @@ service/
 │   └── runner.py          # um subprocess por job, timeout, contenção de crash
 ├── api/main.py            # FastAPI: jobs, peças, nesting, perfis de máquina, presets, download
 ├── web/                   # SPA sem build: tokens CSS, ícones substituíveis, app.js
+│                          #   painel lateral = etapas 1-2-3 recolhíveis (uma aberta por vez)
 ├── seed/                  # perfis de máquina e presets iniciais
 ├── tests/                 # pytest (nesting, núcleo multi-peça, API)
 └── requirements.txt

@@ -22,6 +22,9 @@ const state = {
   pan: null,
   suppressClick: false,
   colorMemory: {}, // settings of operations that were emptied out, keyed by color
+  historyOpen: null, // null = automatic (open without a job), true/false = user's choice
+  lastRenderedStep: null,
+  panelFolded: false, // the current step's panel was folded by hand
 };
 
 // Palette shown in the color bar under the canvas, LightBurn/RDWorks style:
@@ -133,20 +136,66 @@ function paramsValid() {
 // ---------------------------------------------------------------------------
 // Rendering: steps, machine, file
 // ---------------------------------------------------------------------------
+function stepAvailable(n) {
+  const job = state.job;
+  return n === 1 || (n === 2 && !!job?.analysis) || (n === 3 && job?.status === "ready");
+}
+function stepSummary(n) {
+  const job = state.job;
+  const p = profile();
+  if (n === 1) {
+    if (!job) return p ? `${p.name} · envie o desenho` : "Escolha a máquina e envie o desenho";
+    const copies = job.parts.reduce((k, part) => k + (part.enabled ? part.quantity : 0), 0);
+    const parts = `${job.parts.length} peça(s), ${copies} cópia(s)`;
+    return `${p?.name || ""} · ${parts} · ${job.analysis ? "nesteado" : BUSY_STATUSES.has(job.status) ? "processando…" : "falta nestear"}`;
+  }
+  if (n === 2) {
+    if (!job?.analysis) return "Disponível depois de nestear as peças";
+    const ops = job.params?.operations || [];
+    const on = ops.filter((o) => o.enabled).length;
+    return `${ops.length} operação(ões)${on !== ops.length ? ` (${on} ativa(s))` : ""} · ${paramsValid() ? "pronto para gerar" : "há campos inválidos"}`;
+  }
+  if (!job || job.status !== "ready") return "Disponível depois de gerar o arquivo";
+  return `${fmtTime(job.estimate?.total_s)} · ${job.stale ? "desatualizado — gere de novo" : "arquivo pronto"}`;
+}
 function renderSteps() {
   const job = state.job;
   const hasAnalysis = !!job?.analysis;
   const hasResult = job?.status === "ready";
+  if (!stepAvailable(state.step)) state.step = hasAnalysis ? 2 : 1;
+  const stepChanged = state.step !== state.lastRenderedStep;
+  if (stepChanged) state.panelFolded = false;
   for (const n of [1, 2, 3]) {
+    const active = state.step === n;
+    const open = active && !state.panelFolded;
+    const done = (n === 1 && hasAnalysis) || (n === 2 && hasResult) || (n === 3 && hasResult && !job.stale);
     const el = $(`step-${n}`);
-    el.classList.toggle("active", state.step === n);
-    el.classList.toggle("done", (n === 1 && hasAnalysis) || (n === 2 && hasResult));
-    el.disabled = (n === 2 && !hasAnalysis) || (n === 3 && !hasResult);
+    el.classList.toggle("active", active);
+    el.classList.toggle("done", done);
+    el.disabled = !stepAvailable(n);
+    const panel = $(`panel-${n}`);
+    panel.classList.toggle("open", open);
+    panel.classList.toggle("done", done && !open);
+    panel.classList.toggle("locked", !stepAvailable(n));
+    panel.querySelector(".step-head").setAttribute("aria-expanded", String(open));
+    $(`panel-${n}-summary`).textContent = stepSummary(n);
+    const num = panel.querySelector(".num");
+    num.innerHTML = done && !open ? icon("ok") : String(n);
   }
-  $("sec-ops").hidden = !hasAnalysis;
-  $("sec-result").hidden = !hasResult;
-  if (state.step === 3 && hasResult) $("sec-result").scrollIntoView({ block: "start", behavior: "smooth" });
-  if (state.step === 2 && hasAnalysis) $("sec-ops").scrollIntoView({ block: "start", behavior: "smooth" });
+  if (stepChanged) {
+    state.lastRenderedStep = state.step;
+    $(`panel-${state.step}`).scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+  renderHistoryPanel();
+}
+function renderHistoryPanel() {
+  // Open by default while there is no job (that's where you pick one up);
+  // folded once you're working. The user's own toggle wins afterwards.
+  const open = state.historyOpen ?? !state.job;
+  const panel = $("panel-history");
+  panel.classList.toggle("open", open);
+  panel.querySelector(".step-head").setAttribute("aria-expanded", String(open));
+  $("panel-history-summary").textContent = state.jobs.length ? `${state.jobs.length} trabalho(s)` : "Nenhum trabalho ainda";
 }
 
 function renderProfiles() {
@@ -798,6 +847,7 @@ function renderJobBar() {
   else setStatus("ok", job.status === "ready" ? (job.stale ? "Desatualizado" : "Arquivo pronto") : "Aguardando parâmetros");
 }
 function renderHistory() {
+  renderHistoryPanel();
   const box = $("history");
   if (!state.jobs.length) { box.innerHTML = `<span class="muted small">Nenhum trabalho ainda.</span>`; return; }
   box.innerHTML = state.jobs.slice(0, 12).map((j) => `<div class="history-item${j.id === state.job?.id ? " current" : ""}" role="button" tabindex="0" data-open="${j.id}">
@@ -1004,6 +1054,23 @@ function bind() {
   $("origin-marker").innerHTML = icon("origin");
   $("opt-chev").innerHTML = icon("chevron", "icon chev");
   $("m-advanced-chev").innerHTML = icon("chevron", "icon chev");
+  $("machine-chev").innerHTML = icon("chevron", "icon chev");
+  for (const id of ["panel-1-chev", "panel-2-chev", "panel-3-chev", "panel-history-chev"]) $(id).innerHTML = icon("chevron");
+  $("history-icon").innerHTML = icon("history");
+
+  $("inspector").addEventListener("click", (e) => {
+    const head = e.target.closest("[data-open-step]");
+    if (head) {
+      const n = Number(head.dataset.openStep);
+      if (!stepAvailable(n)) return toast(n === 2 ? "Nesteie as peças primeiro." : "Gere o arquivo primeiro.");
+      // Clicking the open panel folds it; clicking another one switches.
+      state.panelFolded = state.step === n ? !state.panelFolded : false;
+      state.step = n;
+      renderSteps();
+      return;
+    }
+    if (e.target.closest("[data-toggle-history]")) { state.historyOpen = !$("panel-history").classList.contains("open"); renderHistoryPanel(); }
+  });
 
   $("theme-toggle").onclick = () => {
     const root = document.documentElement;
@@ -1045,6 +1112,7 @@ function bind() {
     if (btn) setReferenceMode(btn.dataset.value);
   });
   $("btn-new-machine").onclick = () => {
+    $("machine-details").open = true;
     loadMachineForm({ name: "", bed_mm: [900, 600], home_corner: "top-left", job_reference: "anchor", flip_x: false, flip_y: false, swap_xy: false, magic: 136, max_speed_mm_s: 500, min_power_pct: 10 });
     state.editingProfileId = null;
     $("m-name").focus();

@@ -304,6 +304,36 @@ p { margin: 0; }
   display: flex; flex-direction: column;
 }
 .section { padding: var(--space-4); border-bottom: var(--border) solid var(--border-subtle); display: flex; flex-direction: column; gap: var(--space-3); }
+.step-body > .section:last-child { border-bottom: 0; }
+
+/* Step panels: the sidebar mirrors the 1-2-3 steps in the header. One panel
+   is open at a time; done steps can be reopened, future ones are locked. */
+.step-panel { border-bottom: var(--border) solid var(--border-subtle); }
+.step-head {
+  width: 100%; display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4); border: 0; background: var(--surface-0);
+  text-align: left; cursor: pointer; color: var(--text-1);
+}
+.step-head:hover { background: var(--surface-1); }
+.step-head .num {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: var(--font-xs); font-weight: var(--weight-semibold); background: var(--surface-2); color: var(--text-2);
+}
+.step-head .num .icon { width: 14px; height: 14px; }
+.step-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.step-title { font-weight: var(--weight-semibold); font-size: var(--font-md); }
+.step-summary { font-size: var(--font-sm); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-chev { flex: none; color: var(--text-3); display: grid; place-items: center; transition: transform 0.15s; }
+.step-panel.open > .step-head { position: sticky; top: 0; z-index: 2; background: var(--surface-0); border-bottom: var(--border) solid var(--border-subtle); }
+.step-panel.open > .step-head .step-chev { transform: rotate(90deg); }
+.step-panel.open > .step-head .num { background: var(--accent); color: var(--text-inverse); }
+.step-panel.done > .step-head .num { background: var(--success); color: var(--text-inverse); }
+.step-panel.locked > .step-head { cursor: default; }
+.step-panel.locked > .step-head .step-title { color: var(--text-3); }
+.step-panel.locked > .step-head .num { opacity: var(--disabled-opacity); }
+.step-panel.locked > .step-head .step-chev { visibility: hidden; }
+.step-panel:not(.open) > .step-body { display: none; }
+.step-panel.aux > .step-head .num { background: transparent; color: var(--text-3); }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .section-head h2 { flex: 1; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }

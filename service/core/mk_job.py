@@ -417,7 +417,7 @@ def build_operations(kernel, params):
             op.color = Color(color)
         op.settings[OP_ID_KEY] = spec["id"]
         op_nodes[spec["id"]] = op
-        ops_out.append({"id": spec["id"], "elements": 0, "enabled": op.output})
+        ops_out.append({"id": spec["id"], "elements": 0, "enabled": op.output, "color": color or None})
     ops_by_id = {o["id"]: o for o in ops_out}
     return op_nodes, ops_by_id
 
@@ -487,10 +487,12 @@ def statistics(cutcodes, ops_out):
 
 
 def path_svg(device, cutcodes, ops_out, bed, out_path):
+    # The path preview uses each operation's own color (the one in the color
+    # bar); the palette is only a fallback for operations without one.
     colors = {}
     palette = ["#d93025", "#1a73e8", "#188038", "#e37400", "#9334e6", "#0b8043"]
     for index, op in enumerate(ops_out):
-        colors[op["id"]] = palette[index % len(palette)]
+        colors[op["id"]] = op.get("color") or palette[index % len(palette)]
 
     def pt(x, y):
         sx, sy = device.view.iposition(x, y)
