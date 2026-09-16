@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,17 +26,17 @@ def run_job(job_dir, request, timeout=None):
     """
     job_dir = Path(job_dir)
     action = request.get("action", "job")
-    (job_dir / "request.json").write_text(
-        json.dumps(request, ensure_ascii=False), encoding="utf-8"
-    )
-    result_path = job_dir / "result.json"
-    if result_path.exists():
-        result_path.unlink()
+    # Several runs can target the same job directory at once (one analyze_part
+    # per part), so every run gets its own request/result/log files.
+    run_id = f"{action}-{uuid.uuid4().hex[:8]}"
+    request_path = job_dir / f"request-{run_id}.json"
+    result_path = job_dir / f"result-{run_id}.json"
+    log_path = job_dir / f"worker-{run_id}.log"
+    request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"
-    log_path = job_dir / f"worker-{action}.log"
-    cmd = [sys.executable, "-m", "service.core.mk_job", str(job_dir)]
+    cmd = [sys.executable, "-m", "service.core.mk_job", str(job_dir), str(request_path), str(result_path)]
     try:
         with open(log_path, "wb") as log:
             subprocess.run(
@@ -70,4 +71,10 @@ def run_job(job_dir, request, timeout=None):
                 "detail": tail,
             },
         }
-    return json.loads(result_path.read_text(encoding="utf-8"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    for path in (request_path, result_path):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return result

@@ -3,9 +3,10 @@ Headless MeerK40t job runner.
 
 Executed as a subprocess by the service worker:
 
-    python -m service.core.mk_job <job_dir>
+    python -m service.core.mk_job <job_dir> [request.json] [result.json]
 
-Reads ``<job_dir>/request.json`` and writes ``<job_dir>/result.json`` plus the
+Reads the request JSON and writes the result JSON given on the command line
+(defaulting to ``<job_dir>/request.json`` / ``<job_dir>/result.json``) plus the
 requested artifacts (preview.svg, path.svg, stats.json, job.rd).
 
 This module is the only place that imports the MeerK40t kernel. Everything it
@@ -690,7 +691,9 @@ ACTIONS = {
 
 def main(argv):
     job_dir = Path(argv[1]).resolve()
-    request = json.loads((job_dir / "request.json").read_text(encoding="utf-8"))
+    request_path = Path(argv[2]) if len(argv) > 2 else job_dir / "request.json"
+    result_path = Path(argv[3]) if len(argv) > 3 else job_dir / "result.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
     log_lines = []
 
     def log(message):
@@ -715,9 +718,7 @@ def main(argv):
         }
     finally:
         result["log"] = log_lines[-200:]
-        (job_dir / "result.json").write_text(
-            json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        result_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         if kernel is not None:
             try:
                 kernel.console("quit\n")

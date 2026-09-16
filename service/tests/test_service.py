@@ -105,6 +105,7 @@ def test_two_parts_with_quantity_merge_layers_into_shared_operations(client):
     job_id = res.json()["id"]
     job = wait_status(client, job_id, {"parts_ready", "failed"})
     assert job["status"] == "parts_ready"
+    assert all(p["status"] == "ready" for p in job["parts"]), [p["error"] for p in job["parts"]]
     assert len(job["parts"]) == 2
     assert {p["id"] for p in job["parts"]} == {"bracket", "bracket2"}
 

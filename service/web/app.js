@@ -17,7 +17,24 @@ const state = {
   confirmCritical: false,
   saveTimer: null,
   pollTimer: null,
+  view: { base: null, zoom: 1, x: 0, y: 0 }, // canvas zoom/pan; base = bed fitted to the viewport
+  viewJobId: null, // job the current view was fitted for
+  pan: null,
+  suppressClick: false,
+  colorMemory: {}, // settings of operations that were emptied out, keyed by color
 };
+
+// Palette shown in the color bar under the canvas, LightBurn/RDWorks style:
+// a color is an operation. Picked to stay legible on the white bed.
+const PALETTE = [
+  ["#000000", "Preto"], ["#ff0000", "Vermelho"], ["#0000ff", "Azul"], ["#00a000", "Verde"],
+  ["#ff8000", "Laranja"], ["#a000ff", "Roxo"], ["#00b0b0", "Ciano"], ["#e000a0", "Magenta"],
+  ["#c0a000", "Amarelo"], ["#8b4513", "Marrom"], ["#ff69b4", "Rosa"], ["#008080", "Turquesa"],
+  ["#80c000", "Lima"], ["#000080", "Marinho"], ["#808000", "Oliva"], ["#808080", "Cinza"],
+];
+const OP_SETTING_KEYS = ["type", "label", "speed_mm_s", "power_pct", "passes", "kerf_mm", "dpi", "direction"];
+const HIT_TAGS = new Set(["path", "polyline", "polygon", "line", "rect", "circle", "ellipse"]);
+const ZOOM_MIN = 0.5, ZOOM_MAX = 80;
 
 const BUSY_STATUSES = new Set(["analyzing_parts", "nesting", "generating"]);
 const PART_STATUS_LABEL = { analyzing: "Analisando…", ready: "Pronta", failed: "Falhou" };
@@ -286,14 +303,15 @@ function renderCanvas() {
     // small hint instead of the full "envie o desenho" card.
     wrap.hidden = true;
     $("canvas-nav").hidden = true;
-    $("canvas-legend").hidden = true;
+    $("color-bar").hidden = true;
     $("canvas-badges").innerHTML = `<span class="chip info">Peças na lista ao lado — aperte "Nestear peças" para posicioná-las na mesa</span>`;
     return;
   }
   wrap.hidden = !job?.analysis;
   $("canvas-nav").hidden = !job?.analysis;
-  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; $("canvas-legend").hidden = true; return; }
+  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; $("color-bar").hidden = true; return; }
   fitBed(bed);
+  if (state.viewJobId !== job.id) resetView(); else applyView();
   $("bed-label").textContent = `${bed[0]} × ${bed[1]} mm — ${p?.name || ""}`;
   const previewUrl = job.artifacts?.preview_svg;
   if (previewUrl && $("layer-preview").dataset.src !== previewUrl + job.updated_at) {
@@ -301,7 +319,11 @@ function renderCanvas() {
     fetch(previewUrl).then((r) => r.text()).then((svg) => {
       $("layer-preview").innerHTML = svg;
       normalizeSvg($("layer-preview").querySelector("svg"));
+      buildHitTargets();
       styleShapeElements();
+      // First time we show this job: zoom in on the parts so small pieces on a
+      // big bed are actually clickable. Later reloads keep the user's view.
+      if (state.viewJobId !== job.id) { state.viewJobId = job.id; fitToParts(); }
     });
   } else {
     styleShapeElements();
@@ -326,7 +348,7 @@ function renderCanvas() {
   if (job.analysis.outside_bed) badges.push(`<span class="chip danger">${icon("critical")} Geometria fora da mesa</span>`);
   if (job.status === "ready" && state.showPath) badges.push(`<span class="chip info">${icon("travel")} Percurso: cores por operação, tracejado = deslocamento</span>`);
   $("canvas-badges").innerHTML = badges.join("");
-  renderLegend();
+  renderColorBar();
 }
 function normalizeSvg(svg) {
   if (!svg) return;
@@ -344,25 +366,103 @@ function normalizeSvg(svg) {
   }
 }
 function fitBed(bed) {
-  const canvas = $("canvas");
+  // Base size of the bed (zoom 1): fitted to the viewport with some margin.
+  const vp = $("canvas-viewport");
   const pad = 48;
-  const w = canvas.clientWidth - pad * 2, h = canvas.clientHeight - pad * 2 - 40;
-  const scale = Math.min(w / bed[0], h / bed[1]);
-  const wrap = $("bed-wrap");
-  wrap.style.width = `${Math.max(100, bed[0] * scale)}px`;
-  wrap.style.height = `${Math.max(60, bed[1] * scale)}px`;
-  const minor = 10 * scale, major = 100 * scale;
-  $("bed-grid").style.backgroundSize = `${major}px ${major}px, ${major}px ${major}px, ${minor}px ${minor}px, ${minor}px ${minor}px`;
+  const w = vp.clientWidth - pad * 2, h = vp.clientHeight - pad * 2 - 40;
+  const scale = Math.max(0.01, Math.min(w / bed[0], h / bed[1]));
+  state.view.base = { scale, w: bed[0] * scale, h: bed[1] * scale };
 }
 
 // ---------------------------------------------------------------------------
-// Element selection: click shapes on the canvas, assign them to an operation
-// by clicking a color chip in the legend below.
+// Canvas zoom & pan. Zooming resizes the bed element (so strokes, labels and
+// the grid keep their screen size) and panning translates it; the SVG inside
+// stretches to the bed.
+// ---------------------------------------------------------------------------
+function applyView() {
+  const v = state.view;
+  const base = v.base;
+  if (!base) return;
+  const wrap = $("bed-wrap");
+  wrap.style.width = `${base.w * v.zoom}px`;
+  wrap.style.height = `${base.h * v.zoom}px`;
+  wrap.style.transform = `translate(${v.x}px, ${v.y}px)`;
+  const s = base.scale * v.zoom;
+  const minor = 10 * s, major = 100 * s;
+  $("bed-grid").style.backgroundSize = `${major}px ${major}px, ${major}px ${major}px, ${minor}px ${minor}px, ${minor}px ${minor}px`;
+  $("bed-grid").style.opacity = minor < 4 ? "0.5" : "1";
+}
+function resetView() {
+  const vp = $("canvas-viewport");
+  const base = state.view.base;
+  if (!base) return;
+  state.view = { base, zoom: 1, x: (vp.clientWidth - base.w) / 2, y: (vp.clientHeight - base.h) / 2 };
+  applyView();
+}
+function zoomAt(factor, cx, cy) {
+  // cx, cy: cursor position relative to the viewport; that point stays put.
+  const v = state.view;
+  if (!v.base) return;
+  const vp = $("canvas-viewport");
+  if (cx == null) { cx = vp.clientWidth / 2; cy = vp.clientHeight / 2; }
+  const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.zoom * factor));
+  const lx = (cx - v.x) / v.zoom, ly = (cy - v.y) / v.zoom; // point in base px
+  v.zoom = z;
+  v.x = cx - lx * z;
+  v.y = cy - ly * z;
+  applyView();
+}
+function fitToParts() {
+  const job = state.job;
+  const bbox = job?.analysis?.bbox_mm;
+  const base = state.view.base;
+  if (!bbox || !base) return resetView();
+  const vp = $("canvas-viewport");
+  const s = base.scale; // px per mm at zoom 1
+  const bw = Math.max(1, (bbox[2] - bbox[0]) * s), bh = Math.max(1, (bbox[3] - bbox[1]) * s);
+  const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.min((vp.clientWidth * 0.7) / bw, (vp.clientHeight * 0.65) / bh)));
+  const bcx = ((bbox[0] + bbox[2]) / 2) * s, bcy = ((bbox[1] + bbox[3]) / 2) * s;
+  state.view = { base, zoom: z, x: vp.clientWidth / 2 - bcx * z, y: vp.clientHeight / 2 - bcy * z };
+  applyView();
+}
+
+// ---------------------------------------------------------------------------
+// Element selection + color bar. A color is an operation: click shapes on
+// the canvas, then a color in the bar to move them there. Clicking a color
+// that has no operation yet creates one.
 // ---------------------------------------------------------------------------
 function elementOperation(elementId) {
   const ops = state.job?.params?.operations;
   const opId = state.job?.params?.assignments?.[elementId];
   return opId ? ops?.find((o) => o.id === opId) : null;
+}
+function colorName(color) {
+  const hit = PALETTE.find(([c]) => c === String(color || "").toLowerCase());
+  return hit ? hit[1] : String(color || "").toUpperCase();
+}
+function buildHitTargets() {
+  // Next to every shape, add an invisible copy with a wide stroke so a thin
+  // line is clickable without pixel-perfect aim. Same parent, so the same
+  // transforms apply.
+  const job = state.job;
+  const root = $("layer-preview").querySelector("svg");
+  if (!job?.analysis || !root) return;
+  for (const old of root.querySelectorAll(".svc-hit")) old.remove();
+  for (const info of job.analysis.elements) {
+    const el = root.getElementById(info.id);
+    if (!el || !isCuttable(info) || !HIT_TAGS.has(el.tagName.toLowerCase())) continue;
+    const hit = el.cloneNode(false);
+    for (const attr of ["id", "style", "class", "stroke-dasharray", "fill-opacity"]) hit.removeAttribute(attr);
+    hit.setAttribute("class", "svc-hit");
+    hit.setAttribute("data-hit", info.id);
+    hit.setAttribute("fill", "none");
+    hit.setAttribute("stroke", "transparent");
+    hit.setAttribute("stroke-width", "12");
+    hit.setAttribute("stroke-linecap", "round");
+    hit.setAttribute("stroke-linejoin", "round");
+    hit.setAttribute("vector-effect", "non-scaling-stroke");
+    el.after(hit);
+  }
 }
 function styleShapeElements() {
   const job = state.job;
@@ -372,7 +472,7 @@ function styleShapeElements() {
     const el = root.getElementById(info.id);
     if (!el) continue;
     el.classList.add("svc-shape");
-    const op = elementOperation(info.id);
+    const op = isCuttable(info) ? elementOperation(info.id) : null;
     if (op) {
       el.style.stroke = op.color;
       el.style.strokeDasharray = "";
@@ -387,48 +487,168 @@ function styleShapeElements() {
     }
     el.classList.toggle("selected", state.selected.has(info.id));
   }
+  // The wide invisible hit stroke doubles as the selection highlight.
+  for (const hit of root.querySelectorAll(".svc-hit")) hit.classList.toggle("selected", state.selected.has(hit.getAttribute("data-hit")));
 }
-function renderLegend() {
+function shapeIdFromEvent(e) {
+  const hit = e.target.closest?.(".svc-hit");
+  if (hit) return hit.getAttribute("data-hit");
+  const shape = e.target.closest?.(".svc-shape");
+  return shape?.id || null;
+}
+function setHover(id, on) {
+  const root = $("layer-preview").querySelector("svg");
+  if (!id || !root) return;
+  root.getElementById(id)?.classList.toggle("hover", on);
+  for (const hit of root.querySelectorAll(".svc-hit")) if (hit.getAttribute("data-hit") === id) hit.classList.toggle("hover", on);
+}
+function isCuttable(info) {
+  // Reference points survive the DXF import but MeerK40t never cuts them, so
+  // they don't count as belonging to an operation and can't be selected.
+  return info.type !== "elem point";
+}
+function selectableIds() {
+  return (state.job?.analysis?.elements || []).filter(isCuttable).map((info) => info.id);
+}
+function opElementIds(opId) {
+  const assignments = state.job?.params?.assignments || {};
+  const cuttable = new Set(selectableIds());
+  return Object.keys(assignments).filter((eid) => assignments[eid] === opId && cuttable.has(eid));
+}
+function renderColorBar() {
   const job = state.job;
-  const box = $("canvas-legend");
+  const bar = $("color-bar");
   const ops = job?.params?.operations;
-  if (!job?.analysis || !ops?.length) {
-    box.hidden = true;
-    return;
-  }
-  box.hidden = false;
-  const sorted = [...ops].sort((a, b) => a.order - b.order);
+  if (!job?.analysis || !ops?.length) { bar.hidden = true; return; }
+  bar.hidden = false;
   const n = state.selected.size;
-  const info = $("canvas-legend-info");
-  info.hidden = n === 0;
-  info.textContent = n > 0 ? `${n} elemento(s) selecionado(s) · clique numa cor para atribuir · Esc cancela` : "";
-  $("canvas-legend-chips").innerHTML = sorted
-    .map(
-      (op) =>
-        `<button type="button" class="legend-chip${n > 0 ? " selectable" : ""}" data-assign-op="${op.id}" title="${esc(op.label || op.id)}"><span class="dot" style="background:${esc(op.color)}"></span>${esc(op.label || op.id)}</button>`
-    )
-    .join("");
+  bar.classList.toggle("armed", n > 0);
+  const info = $("color-bar-info");
+  info.classList.toggle("armed", n > 0);
+  info.innerHTML = n > 0
+    ? `<strong>${n} forma(s) selecionada(s)</strong><br>Clique numa cor para atribuir. Esc cancela.`
+    : `<strong>Clique numa forma</strong> e depois numa cor para mudar a operação. Shift+clique: várias.`;
+  $("btn-clear-selection").hidden = n === 0;
+  const sorted = [...ops].sort((a, b) => a.order - b.order);
+  const selectedOps = new Set([...state.selected].map((eid) => job.params.assignments?.[eid]));
+  const usedColors = new Set();
+  const entries = [];
+  for (const op of sorted) {
+    const color = (op.color || "#000000").toLowerCase();
+    usedColors.add(color);
+    const count = opElementIds(op.id).length;
+    entries.push(`<button type="button" class="swatch-btn used${selectedOps.has(op.id) && n > 0 ? " active" : ""}" data-op="${esc(op.id)}" title="${esc(op.label || op.id)} · ${OP_LABELS[op.type]} · ${count} elem.${n > 0 ? " — clique para atribuir" : " — clique para selecionar tudo desta operação"}">
+      <span class="swatch-color" style="background:${esc(op.color || "#000")}"><span class="swatch-count">${count}</span></span>
+      <span class="swatch-label">${esc(op.label || op.id)}</span></button>`);
+  }
+  for (const [color, name] of PALETTE) {
+    if (usedColors.has(color)) continue;
+    entries.push(`<button type="button" class="swatch-btn" data-color="${color}" title="${esc(name)} — ${n > 0 ? "cria uma nova operação com a seleção" : "selecione formas primeiro"}">
+      <span class="swatch-color" style="background:${color}"></span>
+      <span class="swatch-label">${esc(name)}</span></button>`);
+  }
+  $("color-bar-swatches").innerHTML = entries.join("");
 }
-function assignSelectionTo(opId) {
+function nextOpId() {
+  let n = 0;
+  for (const op of state.job?.params?.operations || []) {
+    const m = /^op_(\d+)$/.exec(op.id);
+    if (m) n = Math.max(n, Number(m[1]));
+  }
+  return `op_${n + 1}`;
+}
+function createOperationForColor(color) {
+  const job = state.job;
+  const ops = job.params.operations;
+  const first = [...state.selected][0];
+  const proto = elementOperation(first) || ops[0] || {};
+  const op = {
+    id: nextOpId(),
+    source: null,
+    type: proto.type || "cut",
+    label: colorName(color),
+    enabled: true,
+    order: Math.max(-1, ...ops.map((o) => o.order ?? 0)) + 1,
+    speed_mm_s: proto.speed_mm_s ?? 12,
+    power_pct: proto.power_pct ?? 30,
+    passes: proto.passes ?? 1,
+    kerf_mm: proto.type === "cut" ? proto.kerf_mm ?? 0 : 0,
+    dpi: proto.dpi ?? null,
+    direction: proto.direction ?? null,
+    color,
+  };
+  // If this color was used before and emptied out, bring its settings back.
+  Object.assign(op, state.colorMemory[color] || {});
+  if ((op.type === "raster" || op.type === "image") && op.dpi == null) { op.dpi = 254; op.direction = op.direction || "top_to_bottom"; }
+  ops.push(op);
+  state.expanded.add(op.id);
+  return op;
+}
+function pruneEmptyOperations() {
+  // LightBurn-style: an operation with no shapes disappears from the list.
+  // Its settings are remembered by color so re-using the color restores them.
+  const ops = state.job.params.operations;
+  const removed = [];
+  for (const op of [...ops]) {
+    if (ops.length <= 1 || opElementIds(op.id).length > 0) continue;
+    const mem = {};
+    for (const k of OP_SETTING_KEYS) if (op[k] != null) mem[k] = op[k];
+    state.colorMemory[(op.color || "#000000").toLowerCase()] = mem;
+    ops.splice(ops.indexOf(op), 1);
+    state.expanded.delete(op.id);
+    // Anything still pointing here is a non-cuttable leftover (reference
+    // point); drop it so the server doesn't see a dangling assignment.
+    const assignments = state.job.params.assignments;
+    for (const eid of Object.keys(assignments)) if (assignments[eid] === op.id) delete assignments[eid];
+    removed.push(op);
+  }
+  return removed;
+}
+function assignSelectionTo({ opId, color }) {
   const job = state.job;
   if (!job?.params || state.selected.size === 0) return;
-  for (const elementId of state.selected) {
-    job.params.assignments[elementId] = opId;
-  }
+  let op = opId ? job.params.operations.find((o) => o.id === opId) : null;
+  let created = false;
+  if (!op && color) { op = createOperationForColor(color); created = true; }
+  if (!op) return;
+  const moved = [...state.selected].filter((eid) => job.params.assignments[eid] !== op.id);
+  for (const elementId of state.selected) job.params.assignments[elementId] = op.id;
   state.selected.clear();
+  const removed = pruneEmptyOperations();
   styleShapeElements();
-  renderLegend();
+  renderColorBar();
   renderOps();
   renderJobBar();
   saveParams();
-  const op = job.params.operations.find((o) => o.id === opId);
-  toast(`Atribuído a "${op?.label || opId}".`);
+  if (created) {
+    state.step = 2;
+    renderSteps();
+    toast(`Nova operação "${op.label}" com ${moved.length} forma(s). Ajuste velocidade e potência ao lado.`);
+  } else if (moved.length === 0) {
+    toast(`Já estavam em "${op.label || op.id}".`);
+  } else {
+    const extra = removed.length ? ` "${removed.map((r) => r.label || r.id).join('", "')}" ficou vazia e foi removida.` : "";
+    toast(`${moved.length} forma(s) → "${op.label || op.id}".${extra}`);
+  }
+}
+function selectOperationElements(opId) {
+  const ids = opElementIds(opId);
+  state.selected = new Set(ids);
+  styleShapeElements();
+  renderColorBar();
+  const op = state.job.params.operations.find((o) => o.id === opId);
+  toast(ids.length ? `${ids.length} forma(s) de "${op?.label || opId}" selecionada(s). Clique noutra cor para movê-las.` : "Essa operação não tem formas.");
+}
+function selectAll() {
+  state.selected = new Set(selectableIds());
+  styleShapeElements();
+  renderColorBar();
 }
 function clearSelection() {
   if (state.selected.size === 0) return;
   state.selected.clear();
   styleShapeElements();
-  renderLegend();
+  renderColorBar();
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +670,7 @@ function sourceLabel(op) {
   return "seleção manual";
 }
 function opElementCount(op) {
-  const assignments = state.job?.params?.assignments || {};
-  let n = 0;
-  for (const opId of Object.values(assignments)) if (opId === op.id) n++;
-  return n;
+  return opElementIds(op.id).length;
 }
 function numField(op, key, label, unit, opts = {}) {
   const errors = validateOp(op);
@@ -688,6 +905,7 @@ async function runNest() {
   try {
     state.job = await api(`/api/jobs/${job.id}/nest`, { method: "POST" });
     state.selected.clear();
+    state.viewJobId = null; // re-fit the view to the new layout when it arrives
     renderAll();
     schedulePoll();
   } catch (e) { toast(`Não foi possível nestear: ${e.message}`); }
@@ -751,7 +969,8 @@ function bind() {
   $("brand-icon").innerHTML = icon("logo", "icon icon-lg");
   $("empty-icon").innerHTML = icon("upload", "icon icon-lg");
   $("theme-toggle").innerHTML = icon("theme");
-  $("nav-fit").innerHTML = icon("fit"); $("nav-grid").innerHTML = icon("grid"); $("nav-path").innerHTML = icon("travel"); $("nav-travel").innerHTML = icon("distance");
+  $("nav-fit").innerHTML = icon("fit"); $("nav-fit-parts").innerHTML = icon("fitParts"); $("nav-zoom-in").innerHTML = icon("zoomIn"); $("nav-zoom-out").innerHTML = icon("zoomOut");
+  $("nav-grid").innerHTML = icon("grid"); $("nav-path").innerHTML = icon("travel"); $("nav-travel").innerHTML = icon("distance");
   $("origin-marker").innerHTML = icon("origin");
   $("opt-chev").innerHTML = icon("chevron", "icon chev");
   $("m-advanced-chev").innerHTML = icon("chevron", "icon chev");
@@ -885,7 +1104,40 @@ function bind() {
     const open = e.target.closest("[data-open]");
     if (open && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openJob(open.dataset.open); }
   });
-  $("nav-fit").onclick = () => renderCanvas();
+  $("nav-fit").onclick = () => { resetView(); renderCanvas(); };
+  $("nav-fit-parts").onclick = () => { renderCanvas(); fitToParts(); };
+  $("nav-zoom-in").onclick = () => zoomAt(1.5);
+  $("nav-zoom-out").onclick = () => zoomAt(1 / 1.5);
+  const viewport = $("canvas-viewport");
+  viewport.addEventListener("wheel", (e) => {
+    if (!state.job?.analysis) return;
+    e.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - rect.left, e.clientY - rect.top);
+  }, { passive: false });
+  viewport.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !state.job?.analysis || e.target.closest("button, .canvas-nav, .canvas-badges")) return;
+    state.pan = { sx: e.clientX, sy: e.clientY, vx: state.view.x, vy: state.view.y, moved: false };
+  });
+  window.addEventListener("pointermove", (e) => {
+    const pan = state.pan;
+    if (!pan) return;
+    const dx = e.clientX - pan.sx, dy = e.clientY - pan.sy;
+    if (!pan.moved && Math.hypot(dx, dy) < 4) return;
+    pan.moved = true;
+    viewport.classList.add("panning");
+    state.view.x = pan.vx + dx; state.view.y = pan.vy + dy;
+    applyView();
+  });
+  window.addEventListener("pointerup", (e) => {
+    const pan = state.pan;
+    if (!pan) return;
+    state.pan = null;
+    viewport.classList.remove("panning");
+    state.suppressClick = pan.moved;
+    // A plain click on the bed background (not on a shape) clears the selection.
+    if (!pan.moved && viewport.contains(e.target) && !shapeIdFromEvent(e) && !e.target.closest("button")) clearSelection();
+  });
   $("nav-grid").onclick = () => { state.showGrid = !state.showGrid; renderCanvas(); };
   $("nav-path").onclick = () => { state.showPath = !state.showPath; renderCanvas(); renderResult(); };
   $("nav-travel").onclick = () => { state.showTravel = !state.showTravel; renderCanvas(); };
@@ -917,22 +1169,31 @@ function bind() {
   });
   $("btn-nest").onclick = runNest;
 
-  $("canvas-legend-chips").addEventListener("click", (e) => {
-    const chip = e.target.closest("[data-assign-op]");
-    if (chip && state.selected.size > 0) assignSelectionTo(chip.dataset.assignOp);
+  $("color-bar-swatches").addEventListener("click", (e) => {
+    const swatch = e.target.closest(".swatch-btn");
+    if (!swatch) return;
+    if (state.selected.size > 0) return assignSelectionTo({ opId: swatch.dataset.op, color: swatch.dataset.color });
+    if (swatch.dataset.op) return selectOperationElements(swatch.dataset.op);
+    toast("Clique primeiro nas formas do desenho que quer mover para essa cor.");
   });
+  $("btn-select-all").onclick = selectAll;
+  $("btn-clear-selection").onclick = clearSelection;
   $("layer-preview").addEventListener("click", (e) => {
-    const shape = e.target.closest(".svc-shape");
-    if (!shape) return;
-    const id = shape.id;
-    if (!id) return;
+    if (state.suppressClick) { state.suppressClick = false; return; }
+    const id = shapeIdFromEvent(e);
+    if (!id || !selectableIds().includes(id)) return;
     if (!e.shiftKey) state.selected.clear();
     if (state.selected.has(id) && e.shiftKey) state.selected.delete(id);
     else state.selected.add(id);
     styleShapeElements();
-    renderLegend();
+    renderColorBar();
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearSelection(); });
+  $("layer-preview").addEventListener("pointerover", (e) => setHover(shapeIdFromEvent(e), true));
+  $("layer-preview").addEventListener("pointerout", (e) => setHover(shapeIdFromEvent(e), false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") clearSelection();
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && state.job?.analysis && !e.target.closest("input, textarea, select")) { e.preventDefault(); selectAll(); }
+  });
 }
 
 // ---------------------------------------------------------------------------

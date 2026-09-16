@@ -61,9 +61,17 @@ Variáveis de ambiente:
    exporta o `preview.svg` do layout completo → status `ready_for_params` com
    `params.assignments` (mapa `id_do_elemento → id_da_operação`) já preenchido.
 4. `PUT /api/jobs/{id}/params` com `operations` + `assignments` (validado por
-   pydantic e no front). O front deixa clicar numa forma no canvas e numa cor
-   da legenda para mover elementos individuais entre operações — isso só edita
-   `assignments`, nunca `source` (que fica só como rótulo informativo).
+   pydantic e no front). Na **barra de cores** embaixo do canvas (estilo
+   RDWorks/LightBurn: uma cor = uma operação) o usuário clica numa forma e
+   depois numa cor: cor já usada → move para aquela operação; cor livre da
+   paleta → cria uma operação nova com aquela cor (copiando os parâmetros da
+   operação de origem) e move a seleção para ela. Operação que fica sem formas
+   some da lista; os parâmetros dela ficam guardados por cor e voltam se a cor
+   for reutilizada. Isso só edita `operations`/`assignments`, nunca `source`
+   (que fica só como rótulo informativo). Cada forma ganha um clone invisível
+   com traço largo (`.svc-hit`) para o clique não exigir mira; o canvas tem
+   zoom (roda do mouse / botões) e pan (arrastar), e aproxima das peças
+   automaticamente ao abrir um layout.
 5. `POST /api/jobs/{id}/generate` → `action=generate`: recarrega as mesmas
    instâncias na mesma ordem (ids batem com os de `analyze_nested`), aplica
    `assignments` diretamente (sem recombinar por layer/cor), planeja, grava
@@ -133,9 +141,8 @@ adicionar peça invalida o job → duplicar → excluir).
   adiciona ~5 s por job e deixa o `path.svg` maior. Otimização com kerf em desenhos
   grandes pode chegar a dezenas de segundos — cabe no timeout padrão, mas é o
   primeiro alvo de otimização.
-- **Clicar numa forma bem fina no canvas** (kerf/stroke pequeno num layout com muita
-  peça) pode exigir acertar o traço exato — não há uma área de clique alargada
-  ainda.
+- **Pontos de referência** (`elem point` no DXF) aparecem no desenho mas não são
+  selecionáveis nem contam para nenhuma operação: o MeerK40t não os corta.
 - O `.rd` é estruturalmente válido e decodificável pelo próprio loader do MeerK40t,
   e já foi comparado byte a byte com um `.rd` real do RDWorks — mas **ainda não foi
   testado numa Ruida física** (Sprint 7 do plano).

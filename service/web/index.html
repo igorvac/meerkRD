@@ -21,34 +21,44 @@
     </header>
 
     <main class="canvas dropzone" id="canvas">
-      <div class="bed-wrap" id="bed-wrap" hidden>
-        <div class="bed-grid" id="bed-grid"></div>
-        <div class="layer preview" id="layer-preview"></div>
-        <div class="layer path" id="layer-path" data-travel="on"></div>
-        <div class="bed-label" id="bed-label"></div>
-        <span class="origin-marker" id="origin-marker" title="Origem da máquina"></span>
-      </div>
-      <div class="canvas-badges" id="canvas-badges"></div>
-      <div class="canvas-nav" id="canvas-nav" hidden>
-        <button class="btn ghost icon-only" id="nav-fit" title="Ajustar mesa à tela"></button>
-        <button class="btn ghost icon-only active" id="nav-grid" title="Mostrar grade"></button>
-        <button class="btn ghost icon-only" id="nav-path" title="Mostrar percurso do laser" disabled></button>
-        <button class="btn ghost icon-only active" id="nav-travel" title="Mostrar deslocamentos" disabled></button>
-      </div>
-      <div class="canvas-legend" id="canvas-legend" hidden>
-        <div class="canvas-legend-info" id="canvas-legend-info"></div>
-        <div class="canvas-legend-chips" id="canvas-legend-chips"></div>
-      </div>
-      <div class="empty-state" id="empty-state">
-        <div class="empty-card">
-          <span id="empty-icon"></span>
-          <h1>Envie o desenho para começar</h1>
-          <p class="muted">DXF, SVG ou LightBurn. Envie mais de um arquivo para um projeto com várias peças — dá para nestear (posicionar automaticamente) e repetir cada peça. Layers chamados <strong>CUT</strong>, <strong>ENGRAVE</strong> ou <strong>RASTER</strong> viram operações automaticamente; os demais são separados por cor.</p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
-            <button class="btn primary lg" id="btn-upload">Escolher arquivo(s)</button>
-            <button class="btn lg" id="btn-example" title="Carrega uma peça de exemplo com três layers">Usar exemplo</button>
+      <div class="canvas-viewport" id="canvas-viewport">
+        <div class="bed-wrap" id="bed-wrap" hidden>
+          <div class="bed-grid" id="bed-grid"></div>
+          <div class="layer preview" id="layer-preview"></div>
+          <div class="layer path" id="layer-path" data-travel="on"></div>
+          <div class="bed-label" id="bed-label"></div>
+          <span class="origin-marker" id="origin-marker" title="Origem da máquina"></span>
+        </div>
+        <div class="canvas-badges" id="canvas-badges"></div>
+        <div class="canvas-nav" id="canvas-nav" hidden>
+          <button class="btn ghost icon-only" id="nav-fit" title="Ver a mesa inteira"></button>
+          <button class="btn ghost icon-only" id="nav-fit-parts" title="Aproximar das peças"></button>
+          <button class="btn ghost icon-only" id="nav-zoom-in" title="Aproximar (roda do mouse)"></button>
+          <button class="btn ghost icon-only" id="nav-zoom-out" title="Afastar (roda do mouse)"></button>
+          <span class="canvas-nav-sep"></span>
+          <button class="btn ghost icon-only active" id="nav-grid" title="Mostrar grade"></button>
+          <button class="btn ghost icon-only" id="nav-path" title="Mostrar percurso do laser" disabled></button>
+          <button class="btn ghost icon-only active" id="nav-travel" title="Mostrar deslocamentos" disabled></button>
+        </div>
+        <div class="empty-state" id="empty-state">
+          <div class="empty-card">
+            <span id="empty-icon"></span>
+            <h1>Envie o desenho para começar</h1>
+            <p class="muted">DXF, SVG ou LightBurn. Envie mais de um arquivo para um projeto com várias peças — dá para nestear (posicionar automaticamente) e repetir cada peça. Layers chamados <strong>CUT</strong>, <strong>ENGRAVE</strong> ou <strong>RASTER</strong> viram operações automaticamente; os demais são separados por cor. Depois, clique numa forma e numa cor da barra para separar as operações.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+              <button class="btn primary lg" id="btn-upload">Escolher arquivo(s)</button>
+              <button class="btn lg" id="btn-example" title="Carrega uma peça de exemplo com três layers">Usar exemplo</button>
+            </div>
+            <p class="small muted">Arraste e solte um ou mais arquivos aqui também.</p>
           </div>
-          <p class="small muted">Arraste e solte um ou mais arquivos aqui também.</p>
+        </div>
+      </div>
+      <div class="color-bar" id="color-bar" hidden aria-label="Cores das operações">
+        <div class="color-bar-info" id="color-bar-info"></div>
+        <div class="color-bar-swatches" id="color-bar-swatches"></div>
+        <div class="color-bar-actions">
+          <button class="btn sm ghost" id="btn-select-all" title="Selecionar todas as formas do desenho">Selecionar tudo</button>
+          <button class="btn sm ghost" id="btn-clear-selection" title="Limpar seleção (Esc)" hidden>Limpar</button>
         </div>
       </div>
       <input type="file" id="file-input" accept=".dxf,.svg,.svgz,.lbrn,.lbrn2,.xcs,.png,.jpg,.jpeg,.bmp" multiple hidden />
