@@ -169,10 +169,6 @@ function renderSteps() {
     const active = state.step === n;
     const open = active && !state.panelFolded;
     const done = (n === 1 && hasAnalysis) || (n === 2 && hasResult) || (n === 3 && hasResult && !job.stale);
-    const el = $(`step-${n}`);
-    el.classList.toggle("active", active);
-    el.classList.toggle("done", done);
-    el.disabled = !stepAvailable(n);
     const panel = $(`panel-${n}`);
     panel.classList.toggle("open", open);
     panel.classList.toggle("done", done && !open);
@@ -1080,7 +1076,6 @@ function bind() {
   };
   try { const t = localStorage.getItem("rd_theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
 
-  for (const n of [1, 2, 3]) $(`step-${n}`).onclick = () => { state.step = n; renderSteps(); };
   $("btn-upload").onclick = () => $("file-input").click();
   $("file-input").onchange = (e) => { if (e.target.files.length) upload(e.target.files); e.target.value = ""; };
   $("btn-add-part").onclick = () => $("file-input-add").click();
