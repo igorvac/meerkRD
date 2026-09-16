@@ -477,4 +477,18 @@ def artifact(job_id: str, name: str):
     return FileResponse(path, media_type=media)
 
 
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+class RevalidatingStaticFiles(StaticFiles):
+    """
+    Force every static asset to be revalidated (If-None-Match) instead of
+    reused blindly from the browser's disk cache. The dev/service loop here
+    is "edit web/app.js, reload" - a stale cached copy served silently is a
+    much worse failure mode than one extra 304 round-trip per load.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/", RevalidatingStaticFiles(directory=str(WEB_DIR), html=True), name="web")

@@ -54,9 +54,64 @@
       <section class="section" id="sec-machine">
         <div class="section-head"><h2>Máquina</h2></div>
         <div class="field">
-          <label for="profile-select">Perfil da máquina</label>
+          <label for="profile-select">Máquina salva</label>
           <select class="control" id="profile-select"></select>
           <span class="hint" id="profile-hint"></span>
+        </div>
+        <div id="machine-form" style="display:flex;flex-direction:column;gap:12px">
+          <div class="field">
+            <label for="m-name">Nome da máquina</label>
+            <input class="control" id="m-name" type="text" placeholder="Ex.: Laser do laboratório" />
+          </div>
+          <div class="control-row" style="grid-template-columns:1fr 1fr">
+            <div class="field">
+              <label for="m-bed-w">Largura da mesa</label>
+              <div class="unit-input"><input class="control" id="m-bed-w" type="number" min="10" step="1" /><span class="unit">mm</span></div>
+            </div>
+            <div class="field">
+              <label for="m-bed-h">Altura da mesa</label>
+              <div class="unit-input"><input class="control" id="m-bed-h" type="number" min="10" step="1" /><span class="unit">mm</span></div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="m-home">Canto de origem (home)</label>
+            <select class="control" id="m-home">
+              <option value="top-left">Superior esquerdo</option>
+              <option value="top-right">Superior direito</option>
+              <option value="bottom-left">Inferior esquerdo</option>
+              <option value="bottom-right">Inferior direito</option>
+              <option value="center">Centro</option>
+              <option value="auto">Automático</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Modo de referência</label>
+            <div class="segmented" id="m-reference">
+              <button type="button" class="seg-btn" data-value="anchor">Âncora</button>
+              <button type="button" class="seg-btn" data-value="absolute">Não-âncora</button>
+            </div>
+            <span class="hint" id="m-reference-hint"></span>
+          </div>
+          <details id="m-advanced">
+            <summary><span id="m-advanced-chev"></span> Avançado</summary>
+            <div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">
+              <div class="control-row">
+                <label class="toggle"><input type="checkbox" id="m-flip-x" /> Inverter X</label>
+                <label class="toggle"><input type="checkbox" id="m-flip-y" /> Inverter Y</label>
+                <label class="toggle"><input type="checkbox" id="m-swap-xy" /> Trocar X/Y</label>
+              </div>
+              <div class="control-row">
+                <div class="field"><label for="m-magic">Magic number</label><input class="control" id="m-magic" type="number" min="0" max="255" /></div>
+                <div class="field"><label for="m-max-speed">Vel. máxima</label><div class="unit-input"><input class="control" id="m-max-speed" type="number" min="0" /><span class="unit">mm/s</span></div></div>
+                <div class="field"><label for="m-min-power">Potência mínima</label><div class="unit-input"><input class="control" id="m-min-power" type="number" min="0" max="100" /><span class="unit">%</span></div></div>
+              </div>
+            </div>
+          </details>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="btn-new-machine">+ Nova máquina</button>
+            <button class="btn primary" id="btn-save-machine">Salvar máquina</button>
+          </div>
+          <span class="hint" id="machine-save-status" aria-live="polite"></span>
         </div>
       </section>
 

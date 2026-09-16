@@ -131,9 +131,79 @@ function renderProfiles() {
   sel.innerHTML = state.profiles.map((p) => `<option value="${esc(p.id)}"${p.id === current ? " selected" : ""}>${esc(p.name)}</option>`).join("");
   sel.disabled = !!state.job;
   const p = profile();
-  $("profile-hint").textContent = p ? `Mesa ${p.bed_mm[0]} × ${p.bed_mm[1]} mm · origem ${p.home_corner} · máx. ${p.max_speed_mm_s ?? "—"} mm/s${state.job ? " · para trocar de máquina, crie um novo trabalho" : ""}` : "";
+  $("profile-hint").textContent = p ? `Mesa ${p.bed_mm[0]} × ${p.bed_mm[1]} mm · ${p.job_reference === "anchor" ? "âncora" : "não-âncora"}${state.job ? " · para trocar de máquina, crie um novo trabalho" : ""}` : "";
   const presetSel = $("preset-select");
   presetSel.innerHTML = `<option value="">Aplicar preset de material…</option>` + state.presets.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+}
+
+const REFERENCE_HINTS = {
+  anchor: "Âncora (recomendado): o corte parte de onde você marcar Origem/zero de peça no console — igual ao RDWorks. Jogue até o material e aperte Origem antes de rodar.",
+  absolute: "Não-âncora (absoluto): o corte é sempre posicionado a partir do zero geral da máquina, ignorando qualquer origem marcada no console. Exige que a largura/altura da mesa e o canto de origem abaixo estejam exatamente certos.",
+};
+
+function setReferenceMode(mode) {
+  document.querySelectorAll("#m-reference .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === mode));
+  $("m-reference-hint").textContent = REFERENCE_HINTS[mode] || "";
+}
+
+function loadMachineForm(p) {
+  state.editingProfileId = p?.id || null;
+  $("m-name").value = p?.name || "";
+  $("m-bed-w").value = p?.bed_mm?.[0] ?? 900;
+  $("m-bed-h").value = p?.bed_mm?.[1] ?? 600;
+  $("m-home").value = p?.home_corner || "top-left";
+  setReferenceMode(p?.job_reference === "anchor" ? "anchor" : "absolute");
+  $("m-flip-x").checked = !!p?.flip_x;
+  $("m-flip-y").checked = !!p?.flip_y;
+  $("m-swap-xy").checked = !!p?.swap_xy;
+  $("m-magic").value = p?.magic ?? 136;
+  $("m-max-speed").value = p?.max_speed_mm_s ?? "";
+  $("m-min-power").value = p?.min_power_pct ?? "";
+  $("machine-save-status").textContent = "";
+}
+
+function slugify(name) {
+  let base = name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!base) base = "maquina";
+  if (base.length < 2) base += "-m"; // the API requires at least 2 characters
+  return base.slice(0, 30);
+}
+function uniqueProfileId(base) {
+  const existing = new Set(state.profiles.map((p) => p.id));
+  if (!existing.has(base)) return base;
+  let i = 2;
+  while (existing.has(`${base}-${i}`)) i++;
+  return `${base}-${i}`;
+}
+
+function readMachineForm() {
+  const active = document.querySelector("#m-reference .seg-btn.active");
+  const name = $("m-name").value.trim() || "Minha máquina";
+  const id = state.editingProfileId || uniqueProfileId(slugify(name));
+  const num = (elId) => {
+    const v = $(elId).value;
+    return v === "" ? null : Number(v);
+  };
+  return {
+    id,
+    name,
+    driver: "ruida-beta",
+    bed_mm: [num("m-bed-w") || 900, num("m-bed-h") || 600],
+    home_corner: $("m-home").value,
+    job_reference: active ? active.dataset.value : "anchor",
+    flip_x: $("m-flip-x").checked,
+    flip_y: $("m-flip-y").checked,
+    swap_xy: $("m-swap-xy").checked,
+    magic: num("m-magic") ?? 136,
+    max_speed_mm_s: num("m-max-speed"),
+    min_power_pct: num("m-min-power"),
+    notes: "",
+  };
 }
 
 function renderFile() {
@@ -382,6 +452,7 @@ async function openJob(id) {
   state.confirmCritical = false;
   state.showPath = false;
   state.step = state.job.status === "ready" ? 3 : state.job.analysis ? 2 : 1;
+  loadMachineForm(state.profiles.find((p) => p.id === state.job.profile_id));
   renderAll();
   schedulePoll();
 }
@@ -482,6 +553,7 @@ function bind() {
   $("nav-fit").innerHTML = icon("fit"); $("nav-grid").innerHTML = icon("grid"); $("nav-path").innerHTML = icon("travel"); $("nav-travel").innerHTML = icon("distance");
   $("origin-marker").innerHTML = icon("origin");
   $("opt-chev").innerHTML = icon("chevron", "icon chev");
+  $("m-advanced-chev").innerHTML = icon("chevron", "icon chev");
 
   $("theme-toggle").onclick = () => {
     const root = document.documentElement;
@@ -503,8 +575,34 @@ function bind() {
   canvas.addEventListener("dragover", (e) => { e.preventDefault(); canvas.classList.add("dragover"); });
   canvas.addEventListener("dragleave", () => canvas.classList.remove("dragover"));
   canvas.addEventListener("drop", (e) => { e.preventDefault(); canvas.classList.remove("dragover"); const f = e.dataTransfer.files[0]; if (f) upload(f); });
-  $("profile-select").onchange = () => renderProfiles();
+  $("profile-select").onchange = () => {
+    loadMachineForm(state.profiles.find((p) => p.id === $("profile-select").value));
+    renderProfiles();
+  };
   $("preset-select").onchange = (e) => { applyPreset(e.target.value); e.target.value = ""; };
+
+  $("m-reference").addEventListener("click", (e) => {
+    const btn = e.target.closest(".seg-btn");
+    if (btn) setReferenceMode(btn.dataset.value);
+  });
+  $("btn-new-machine").onclick = () => {
+    loadMachineForm({ name: "", bed_mm: [900, 600], home_corner: "top-left", job_reference: "anchor", flip_x: false, flip_y: false, swap_xy: false, magic: 136, max_speed_mm_s: 500, min_power_pct: 10 });
+    state.editingProfileId = null;
+    $("m-name").focus();
+  };
+  $("btn-save-machine").onclick = async () => {
+    const payload = readMachineForm();
+    if (!(payload.bed_mm[0] > 0 && payload.bed_mm[1] > 0)) return toast("Informe a largura e a altura da mesa.");
+    try {
+      await api("/api/machine-profiles", { method: "POST", json: payload });
+      state.profiles = await api("/api/machine-profiles");
+      state.editingProfileId = payload.id;
+      $("profile-select").value = payload.id;
+      renderProfiles();
+      $("machine-save-status").textContent = `Salvo às ${new Date().toLocaleTimeString("pt-BR")}.`;
+      toast(`Máquina "${payload.name}" salva.`);
+    } catch (e) { toast(`Não foi possível salvar: ${e.message}`); }
+  };
 
   $("op-list").addEventListener("click", (e) => {
     const toggle = e.target.closest("[data-toggle]");
@@ -595,6 +693,7 @@ async function boot() {
     [state.profiles, state.presets] = await Promise.all([api("/api/machine-profiles"), api("/api/material-presets")]);
     await loadJobs();
   } catch (e) { toast(`Não foi possível conectar ao serviço: ${e.message}`); }
+  loadMachineForm(state.profiles[0]);
   renderAll();
   const last = state.jobs[0];
   if (last && new URLSearchParams(location.search).get("job")) openJob(new URLSearchParams(location.search).get("job"));
