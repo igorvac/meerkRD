@@ -806,6 +806,18 @@ function groupInstances(root) {
     body.appendChild(el);
   }
   for (const g of [...root.querySelectorAll("g:not(.svc-inst):not(.svc-inst-body)")]) if (!g.querySelector("*")) g.remove();
+  // Shapes are outlines with no fill, so a click inside a piece would hit
+  // nothing: give every copy an invisible area over its whole box (move mode
+  // only, see CSS) so it can be grabbed anywhere.
+  for (const body of bodies.values()) {
+    const b = body.getBBox();
+    const area = document.createElementNS(SVG_NS, "rect");
+    area.setAttribute("class", "svc-inst-area");
+    area.setAttribute("x", b.x); area.setAttribute("y", b.y);
+    area.setAttribute("width", b.width); area.setAttribute("height", b.height);
+    area.setAttribute("fill", "transparent"); area.setAttribute("stroke", "none");
+    body.insertBefore(area, body.firstChild);
+  }
   root.dataset.grouped = "1";
 }
 function deltaTransform(rendered, current, upm) {
@@ -882,6 +894,7 @@ function renderLayoutBadges() {
   if (issues.overlaps.length) chips.push(`<span class="chip danger">${icon("critical")} ${issues.overlaps.length} sobreposição(ões) entre peças</span>`);
   if (issues.scaled.length) chips.push(`<span class="chip warn" title="A escala muda o tamanho real do corte. Confira as medidas antes de gerar.">${icon("warning")} ${issues.scaled.length} peça(s) com escala alterada</span>`);
   if (job.status === "relayout" || layoutPending(job)) chips.push(`<span class="chip info">Atualizando pré-visualização…</span>`);
+  if (state.canvasMode === "move" && state.pieces.size === 0) chips.push(`<span class="chip">${icon("move")} Clique ou arraste uma peça para movê-la · arraste na mesa vazia para selecionar várias · Espaço+arrastar ou botão do meio: pan</span>`);
   box.innerHTML = chips.join("");
 }
 
@@ -1084,8 +1097,12 @@ function togglePiece(key) {
   applyInstanceTransforms();
 }
 function pieceKeyFromEvent(e) {
-  const outer = e.target.closest?.(".svc-inst");
-  return outer?.dataset.inst || null;
+  // Where pieces overlap, an outline under the pointer beats the box area of
+  // whichever piece happens to be drawn on top.
+  const stack = document.elementsFromPoint(e.clientX, e.clientY);
+  const outline = stack.find((el) => el.classList?.contains("svc-hit") || el.classList?.contains("svc-shape"));
+  const hit = outline || stack.find((el) => el.classList?.contains("svc-inst-area")) || e.target;
+  return hit.closest?.(".svc-inst")?.dataset.inst || null;
 }
 function viewportPoint(e) {
   const rect = $("canvas-viewport").getBoundingClientRect();
@@ -1715,7 +1732,11 @@ function bind() {
     // Middle button (or Space held) always pans, whatever the mode.
     if (e.button === 1 || (e.button === 0 && state.spaceHeld)) { e.preventDefault(); return startPan(); }
     if (e.button !== 0) return;
-    if (state.canvasMode !== "move" || BUSY_STATUSES.has(state.job.status) && state.job.status !== "relayout") return startPan();
+    if (state.canvasMode !== "move" || BUSY_STATUSES.has(state.job.status) && state.job.status !== "relayout") {
+      startPan();
+      state.pan.onShape = !!shapeIdFromEvent(e);
+      return;
+    }
     const handle = e.target.closest?.("[data-handle]");
     if (handle && state.pieces.size) {
       e.preventDefault();
@@ -1765,6 +1786,9 @@ function bind() {
     state.pan = null;
     viewport.classList.remove("panning");
     state.suppressClick = pan.moved;
+    if (pan.moved && pan.onShape && state.canvasMode === "select" && !state.job?.status?.match(/^(generating|nesting|analyzing_parts)$/)) {
+      toast("Para mover peças na mesa, use o modo \"Mover peças\" (tecla M).", { label: "Ativar", fn: () => setCanvasMode("move") });
+    }
     // A plain click on the bed background (not on a shape) clears the selection.
     if (!pan.moved && viewport.contains(e.target) && !shapeIdFromEvent(e) && !e.target.closest("button")) clearSelection();
   });

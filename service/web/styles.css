@@ -285,6 +285,8 @@ p { margin: 0; }
    drawn on its own layer with a frame, corner handles (uniform scale) and a
    rotation handle; the piece box next to it takes exact numbers. */
 .canvas-viewport.mode-move { user-select: none; -webkit-user-select: none; }
+.svc-inst-area { pointer-events: none; }
+.canvas-viewport.mode-move .svc-inst-area { pointer-events: all; cursor: move; }
 .canvas-viewport.mode-move .svc-inst { cursor: move; }
 .canvas-viewport.mode-move .svc-inst .svc-shape, .canvas-viewport.mode-move .svc-inst .svc-hit { cursor: move; }
 .canvas-viewport.mode-move .svc-hit.hover { stroke-opacity: 0.12; }
