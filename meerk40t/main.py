@@ -220,7 +220,6 @@ def run():
 
 
 def _exe(restarted, args):
-    from meerk40t.external_plugins import plugin as external_plugins
     from meerk40t.internal_plugins import plugin as internal_plugins
     from meerk40t.kernel import Kernel
 
@@ -234,7 +233,6 @@ def _exe(restarted, args):
     )
     kernel.args = args
     kernel.add_plugin(internal_plugins)
-    kernel.add_plugin(external_plugins)
     auto = hasattr(kernel.args, "auto") and kernel.args.auto
     command = hasattr(kernel.args, "execute") and kernel.args.execute
     console = hasattr(kernel.args, "console") and kernel.args.console

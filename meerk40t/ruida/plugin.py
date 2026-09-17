@@ -11,10 +11,6 @@ from meerk40t.ruida.rdjob import RDJob
 
 
 def plugin(kernel, lifecycle=None):
-    if lifecycle == "plugins":
-        from .gui import gui
-
-        return [gui.plugin]
     if lifecycle == "register":
         _ = kernel.translation
         kernel.register("provider/device/ruida", RuidaDevice)

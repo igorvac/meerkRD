@@ -91,6 +91,9 @@ def boot_kernel(log):
     )
     kernel.args = args
     kernel.add_plugin(internal_plugins)
+    # Only the Ruida driver is registered, so it must also be the device the
+    # device manager boots by default (upstream defaults to lhystudios).
+    kernel.root.setting(str, "preferred_device", "ruida")
     kernel(partial=True)
     kernel.channel("console").watch(log)
     kernel.register("render-op/make_raster", make_raster)
