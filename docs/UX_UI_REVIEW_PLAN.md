@@ -1,7 +1,7 @@
 # MeerK40t — Análise crítica de UX/UI e plano de melhorias
 
 **Versão analisada:** 0.9.9040 (src), macOS 15 / wxPython 4.2.3
-**Branch de trabalho:** `ux-review`
+**Branch de trabalho:** `main` (antiga `ux-review`)
 **Referência de bom design:** Autodesk Fusion 360 (Design + Manufacture)
 **Método:** execução real do app com perfil isolado (`-P 9 -X`), navegação pelos fluxos
 principais (importar/criar → classificar em operações → parametrizar → posicionar →

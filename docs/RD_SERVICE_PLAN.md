@@ -1,6 +1,6 @@
 # Plano: MeerK40t como serviço web de geração de arquivos `.rd`
 
-**Branch:** `ux-review`
+**Branch:** `main` (antiga `ux-review`)
 **Base validada:** 0.9.9040 (src) headless (`-z -Z -X -p -b`), DXF → `.rd` em ~1 s, com a
 correção do `save_job` Ruida em `meerk40t/ruida/device.py` (ver [UX_UI_REVIEW_PLAN.md](UX_UI_REVIEW_PLAN.md) §8 e
 histórico da branch).
@@ -339,7 +339,7 @@ serviço, favicon.
 
 ---
 
-## 8. Estado da implementação (branch `ux-review`)
+## 8. Estado da implementação (branch `main`)
 
 Implementado em `service/` (ver [service/README.md](../service/README.md)):
 

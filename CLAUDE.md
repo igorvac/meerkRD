@@ -5,7 +5,7 @@ inteiro antes de começar. O que segue é específico de sessões com Claude Cod
 
 - Responda ao usuário em **português do Brasil**; código, identificadores e
   mensagens de commit em inglês.
-- Trabalhe na branch `ux-review` (padrão do fork `igorvac/meerkRD`). Commite ao
+- Trabalhe na branch `main` (padrão do fork `igorvac/meerkRD`). Commite ao
   concluir cada feature; **não** faça push nem altere o remote sem pedido.
 - Servidor de preview: `.claude/launch.json` (`rd-service`, porta 8765, usa
   `.venv/bin/python`). Se a porta estiver ocupada por um servidor que o usuário
