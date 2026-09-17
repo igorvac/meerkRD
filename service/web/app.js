@@ -1503,9 +1503,9 @@ function schedulePoll() {
           if (fresh.status === "ready") {
             state.step = 3; state.showPath = true;
             toast("Arquivo .rd pronto para download.");
-            // The message RDWorks itself shows when it saves an offline file
-            // (its GBK text as seen through a Latin-1 lens) - kept verbatim.
-            if (wasBusy === "generating") setTimeout(() => alert("ÍÑ»úÍÄ¼þ±£´æ³É¹|!"), 50);
+            // Easter egg: the message RDWorks itself shows when it saves an
+            // offline file - "脱机文件保存成功!" as its GBK bytes look in Latin-1.
+            if (wasBusy === "generating") setTimeout(() => alert("ÍÑ»úÎÄ¼þ±£´æ³É¹¦!"), 50);
           }
           if (fresh.status === "failed") toast(`Falha: ${fresh.error?.message || "erro desconhecido"}`);
         }
