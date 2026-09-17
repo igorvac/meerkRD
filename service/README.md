@@ -31,6 +31,12 @@ pip install -r service/requirements.txt
 uvicorn service.api.main:app --host 127.0.0.1 --port 8765
 ```
 
+O pacote `meerk40t/` neste repositório é uma versão enxuta do MeerK40t: só o
+kernel, o núcleo (elementos, planejador, cutcode), o driver Ruida, os loaders
+(DXF, SVG, LightBurn, xTool, imagens) e as ferramentas de raster. GUI, câmera,
+os outros drivers e as traduções foram removidos; a árvore completa está na tag
+`antes-da-limpeza`.
+
 Abra <http://127.0.0.1:8765>. O botão **Usar exemplo** carrega `web/exemplo.dxf`
 (layers `CUT`, `ENGRAVE`, `LOGO`).
 
@@ -123,8 +129,11 @@ e `min_power_pct` alimentam a validação e os avisos.
 ## Testes
 
 ```bash
-python -m pytest service/tests -v
+python -m pytest test service/tests
 ```
+
+`test/` é a suíte do MeerK40t para o que ficou (kernel, núcleo, Ruida, DXF);
+`service/tests` cobre o serviço.
 
 Cobrem: o algoritmo de nesting isolado (sem overlap, sem estourar a mesa, rotação,
 peça que não cabe), o núcleo multi-peça (`analyze_part`/`analyze_nested`/`generate`

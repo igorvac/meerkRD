@@ -1,6 +1,13 @@
--r ../requirements-nogui.txt
+# MeerK40t kernel (headless)
+numpy
+Pillow
+pyusb
+pyserial
 ezdxf>=1.1
+# service
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 pydantic>=2.6
+# tests
+pytest

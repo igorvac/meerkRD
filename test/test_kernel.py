@@ -145,27 +145,6 @@ class TestKernel(unittest.TestCase):
             kernel.console("elements\n")
             kernel()
 
-    def test_external_plugins(self):
-        """
-        This tests the functionality of external plugins which typically ran pkg_resources but was switched to
-        importlib on the release of python 3.12. This code functions if and only if no crash happens.
-
-        @return:
-        """
-
-        class Args:
-            no_plugins = False
-
-        kernel = bootstrap.bootstrap()
-        kernel.args = Args()
-        try:
-            from meerk40t.external_plugins import plugin
-
-            q = plugin(kernel=kernel, lifecycle="plugins")
-            print(q)
-        finally:
-            kernel()
-
 
 class TestGetSafePath(unittest.TestCase):
     def test_get_safe_path(self):
