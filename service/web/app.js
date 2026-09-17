@@ -785,7 +785,9 @@ function groupInstances(root) {
   const bodies = new Map();
   for (const info of job.analysis.elements) {
     const el = root.getElementById(info.id);
-    if (!el) continue;
+    // Reference points come out as <element>, which the browser treats as an
+    // unknown tag with no geometry (and no getScreenCTM): leave them be.
+    if (!el || typeof el.getScreenCTM !== "function") continue;
     const key = instKey(info.id);
     let body = bodies.get(key);
     if (!body) {
@@ -810,7 +812,9 @@ function groupInstances(root) {
   // nothing: give every copy an invisible area over its whole box (move mode
   // only, see CSS) so it can be grabbed anywhere.
   for (const body of bodies.values()) {
-    const b = body.getBBox();
+    let b;
+    try { b = body.getBBox(); } catch { continue; }
+    if (!(b.width > 0 || b.height > 0)) continue;
     const area = document.createElementNS(SVG_NS, "rect");
     area.setAttribute("class", "svc-inst-area");
     area.setAttribute("x", b.x); area.setAttribute("y", b.y);
