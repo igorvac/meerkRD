@@ -96,7 +96,9 @@ Variáveis de ambiente:
    `params`/`assignments` são preservados. Enquanto isso o canvas mostra a
    transformação localmente (delta entre `placements` e
    `rendered_placements`, os placements da última análise). O canvas também
-   avisa peça fora da mesa, sobreposição (por retângulo delimitador) e escala
+   avisa peça fora da mesa, sobreposição (pelos contornos desenhados: um
+   segmento cruzando outro ou um vértice dentro do contorno de outra peça, com
+   regra par-ímpar — uma peça dentro do furo de outra é válida) e escala
    alterada. `POST /api/jobs/{id}/layout/reset` volta ao `nest_placements`
    (a saída intacta do nesting); nestear de novo, mudar quantidade ou máquina
    descarta o layout manual com confirmação. Um job já gerado fica `stale`.
@@ -205,8 +207,9 @@ adicionar peça invalida o job → duplicar → excluir).
   passaram pelo motor (a caixa medida bate com a geometria esperada) e pelo
   navegador, mas um `.rd` com peças giradas em ângulos arbitrários — sobretudo em
   modo âncora, cujo header usa o canto mínimo da geometria — ainda precisa de
-  comparação com o RDWorks e de um corte de teste. A detecção de sobreposição é
-  por retângulo delimitador, não por contorno. Escalar peças com imagem raster
+  comparação com o RDWorks e de um corte de teste. A detecção de sobreposição
+  amostra os contornos a cada ~2 mm (imagens e texto contam pela caixa) e não
+  considera kerf nem folga mínima. Escalar peças com imagem raster
   (`elem image`) não foi verificado.
 - O `.rd` é estruturalmente válido e decodificável pelo próprio loader do MeerK40t,
   e já foi comparado byte a byte com um `.rd` real do RDWorks — mas **ainda não foi

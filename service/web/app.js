@@ -823,6 +823,8 @@ function groupInstances(root) {
     body.insertBefore(area, body.firstChild);
   }
   root.dataset.grouped = "1";
+  root.dataset.gen = String((groupInstances.gen = (groupInstances.gen || 0) + 1));
+  contourCache.clear();
 }
 function deltaTransform(rendered, current, upm) {
   // Applied right-to-left: scale about the rendered center, rotate about it,
@@ -872,6 +874,95 @@ function unionBox(boxes) {
     x1: Math.max(...list.map((b) => b.x1)), y1: Math.max(...list.map((b) => b.y1)),
   };
 }
+// Overlap is decided on the drawn outlines, not on bounding boxes: a turned
+// or non-rectangular piece has a box much larger than itself. Two pieces
+// overlap when an outline segment of one crosses one of the other, or when a
+// point of one lies inside the other (even-odd over its closed contours, so a
+// piece sitting inside another's hole is fine).
+const contourCache = new Map(); // instance key -> { sig, contours }
+function shapeContours(el, m, upm) {
+  const tag = el.tagName.toLowerCase();
+  const apply = (x, y) => [(m.a * x + m.c * y + m.e) / upm, (m.b * x + m.d * y + m.f) / upm];
+  const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.05;
+  if (tag === "polyline" || tag === "polygon") {
+    const pts = [];
+    for (const pt of el.points) pts.push(apply(pt.x, pt.y));
+    if (pts.length < 2) return [];
+    const closed = tag === "polygon" || el.getAttribute("closed") === "True" || near(pts[0], pts[pts.length - 1]);
+    return [{ pts, closed }];
+  }
+  let total;
+  try { total = el.getTotalLength(); } catch { total = null; }
+  if (!(total > 0)) {
+    // Images, text: no outline to walk, their box has to do.
+    let b;
+    try { b = el.getBBox(); } catch { return []; }
+    if (!(b.width > 0 && b.height > 0)) return [];
+    return [{ pts: [apply(b.x, b.y), apply(b.x + b.width, b.y), apply(b.x + b.width, b.y + b.height), apply(b.x, b.y + b.height)], closed: true }];
+  }
+  const first = el.getPointAtLength(0);
+  const scaleHint = Math.hypot(m.a, m.b) / upm; // local units -> mm, roughly
+  const n = Math.max(8, Math.min(160, Math.round((total * scaleHint) / 2)));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const pt = el.getPointAtLength((total * i) / n);
+    pts.push(apply(pt.x, pt.y));
+  }
+  const d = el.getAttribute("d") || "";
+  const closed = tag === "rect" || tag === "ellipse" || tag === "circle" || /z\s*$/i.test(d) || near(pts[0], pts[pts.length - 1]);
+  return [{ pts, closed }];
+}
+function instanceContours(key) {
+  const root = previewRoot();
+  const outer = root?.querySelector(`.svc-inst[data-inst="${CSS.escape(key)}"]`);
+  if (!outer) return [];
+  const body = outer.firstElementChild;
+  const sig = `${root.dataset.gen}|${body.getAttribute("transform") || ""}`;
+  const hit = contourCache.get(key);
+  if (hit && hit.sig === sig) return hit.contours;
+  const rootScreen = root.getScreenCTM();
+  if (!rootScreen) return [];
+  const inv = rootScreen.inverse();
+  const upm = unitsPerMm(root);
+  const contours = [];
+  for (const el of body.querySelectorAll(".svc-shape")) {
+    const screen = el.getScreenCTM?.();
+    if (!screen) continue;
+    contours.push(...shapeContours(el, inv.multiply(screen), upm));
+  }
+  contourCache.set(key, { sig, contours });
+  return contours;
+}
+function segmentsCross(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const o1 = o(a, b, c), o2 = o(a, b, d), o3 = o(c, d, a), o4 = o(c, d, b);
+  return o1 * o2 < 0 && o3 * o4 < 0;
+}
+function pointInContours(pt, contours) {
+  let inside = false;
+  for (const { pts, closed } of contours) {
+    if (!closed) continue;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if (yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+function contoursOverlap(A, B) {
+  for (const ca of A) {
+    for (const cb of B) {
+      const na = ca.closed ? ca.pts.length : ca.pts.length - 1, nb = cb.closed ? cb.pts.length : cb.pts.length - 1;
+      for (let i = 0; i < na; i++) {
+        const a0 = ca.pts[i], a1 = ca.pts[(i + 1) % ca.pts.length];
+        for (let j = 0; j < nb; j++) {
+          if (segmentsCross(a0, a1, cb.pts[j], cb.pts[(j + 1) % cb.pts.length])) return true;
+        }
+      }
+    }
+  }
+  return A.some((c) => pointInContours(c.pts[0], B)) || B.some((c) => pointInContours(c.pts[0], A));
+}
 function layoutIssues() {
   // Client-side, from the drawn geometry; the engine's own check replaces it
   // once the re-analysis lands.
@@ -882,7 +973,9 @@ function layoutIssues() {
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       const a = boxes[i][1], b = boxes[j][1];
-      if (a.x0 < b.x1 - 0.01 && b.x0 < a.x1 - 0.01 && a.y0 < b.y1 - 0.01 && b.y0 < a.y1 - 0.01) overlaps.push([boxes[i][0], boxes[j][0]]);
+      // Boxes apart: certainly no overlap. Boxes crossing: ask the outlines.
+      if (!(a.x0 < b.x1 - 0.01 && b.x0 < a.x1 - 0.01 && a.y0 < b.y1 - 0.01 && b.y0 < a.y1 - 0.01)) continue;
+      if (contoursOverlap(instanceContours(boxes[i][0]), instanceContours(boxes[j][0]))) overlaps.push([boxes[i][0], boxes[j][0]]);
     }
   }
   const scaled = (state.job?.placements || []).filter((p) => Math.abs(p.scale - 1) > 1e-6).map(placementKey);
