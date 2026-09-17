@@ -72,7 +72,8 @@ Variáveis de ambiente:
    exporta o `preview.svg` do layout completo → status `ready_for_params` com
    `params.assignments` (mapa `id_do_elemento → id_da_operação`) já preenchido.
 4. `PUT /api/jobs/{id}/params` com `operations` + `assignments` (validado por
-   pydantic e no front). Na **barra de cores** embaixo do canvas (estilo
+   pydantic e no front). Na **barra inferior** do canvas (que também mostra o
+   status e o tema; estilo
    RDWorks/LightBurn: uma cor = uma operação) o usuário clica numa forma e
    depois numa cor: cor já usada → move para aquela operação; cor livre da
    paleta → cria uma operação nova com aquela cor (copiando os parâmetros da

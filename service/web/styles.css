@@ -146,24 +146,17 @@ p { margin: 0; }
    --------------------------------------------------------------------------- */
 .app {
   display: grid;
-  grid-template-rows: auto 1fr var(--jobbar-h);
+  grid-template-rows: 1fr;
   grid-template-columns: 1fr 400px;
-  grid-template-areas: "header header" "canvas inspector" "jobbar jobbar";
+  grid-template-areas: "canvas inspector";
   height: 100%;
 }
-.header {
-  grid-area: header;
-  display: flex; align-items: center; gap: var(--space-4);
-  padding: 0 var(--space-4); height: 52px;
-  background: var(--surface-0); border-bottom: var(--border) solid var(--border-subtle);
-}
-.brand { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--weight-semibold); }
+.brand { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--weight-semibold); flex: none; }
 .brand .icon-lg { color: var(--accent); }
-.header .spacer { flex: 1; }
 .status-pill {
-  display: inline-flex; align-items: center; gap: var(--space-2);
+  display: inline-flex; align-items: center; gap: var(--space-2); flex: none;
   padding: 0 var(--space-3); height: 28px; border-radius: 14px;
-  background: var(--surface-2); color: var(--text-2); font-size: var(--font-sm);
+  background: var(--surface-2); color: var(--text-2); font-size: var(--font-sm); white-space: nowrap;
 }
 .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
 .status-pill.ok .dot { background: var(--success); }
@@ -225,21 +218,26 @@ p { margin: 0; }
 .empty-card .icon-lg { width: 48px; height: 48px; color: var(--accent); }
 .dropzone.dragover .empty-card { outline: 2px dashed var(--accent); }
 .canvas-badges { position: absolute; top: var(--space-3); left: var(--space-3); display: flex; gap: var(--space-2); }
-/* Color bar: one swatch per operation (LightBurn/RDWorks-style palette).
-   Click shapes on the canvas, then a color, to move them to that operation. */
-.color-bar {
-  flex: none; display: flex; align-items: center; gap: var(--space-3);
-  min-height: 64px; padding: var(--space-2) var(--space-3);
+/* Bottom bar: the single strip under the canvas - status, then the color bar
+   (one swatch per operation, LightBurn/RDWorks-style: click shapes on the
+   canvas, then a color, to move them to that operation) or a short message. */
+.bottom-bar {
+  position: relative; flex: none; display: flex; align-items: center; gap: var(--space-3);
+  min-height: var(--jobbar-h); padding: var(--space-2) var(--space-3);
   background: var(--surface-0); border-top: var(--border) solid var(--border-subtle);
 }
+.bottom-msg { flex: 1; min-width: 0; }
+.bottom-msg:empty { display: none; }
+.color-bar { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-3); }
 .color-bar-info {
-  flex: none; width: 190px; font-size: var(--font-sm); color: var(--text-2); line-height: 1.35;
+  flex: none; width: 170px; font-size: var(--font-xs); color: var(--text-2); line-height: 1.3;
 }
 .color-bar-info strong { color: var(--text-1); }
 .color-bar-info.armed { color: var(--accent); }
 .color-bar-info.armed strong { color: var(--accent); }
 .color-bar-swatches {
-  flex: 1; display: flex; gap: var(--space-1); flex-wrap: wrap; align-items: flex-start; min-width: 0;
+  flex: 1; display: flex; gap: var(--space-1); flex-wrap: nowrap; align-items: flex-start; min-width: 0;
+  overflow-x: auto; overflow-y: hidden; padding: 6px 2px 2px; scrollbar-width: thin;
 }
 .color-bar-actions { flex: none; display: flex; gap: var(--space-1); }
 .swatch-btn {
@@ -325,10 +323,11 @@ p { margin: 0; }
    Inspector
    --------------------------------------------------------------------------- */
 .inspector {
-  grid-area: inspector; overflow: auto;
+  grid-area: inspector; min-height: 0;
   background: var(--surface-0); border-left: var(--border) solid var(--border-subtle);
   display: flex; flex-direction: column;
 }
+.inspector-scroll { flex: 1; min-height: 0; overflow: auto; }
 .section { padding: var(--space-4); border-bottom: var(--border) solid var(--border-subtle); display: flex; flex-direction: column; gap: var(--space-3); }
 .step-body > .section:last-child { border-bottom: 0; }
 
@@ -483,19 +482,22 @@ table.ops td.num, table.ops th.num { text-align: right; font-variant-numeric: ta
 /* ---------------------------------------------------------------------------
    Job bar
    --------------------------------------------------------------------------- */
+/* Sticky footer of the sidebar: warnings, estimate, generate/download. */
 .jobbar {
-  grid-area: jobbar; display: flex; align-items: center; gap: var(--space-4);
-  padding: 0 var(--space-4);
+  flex: none; display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   background: var(--surface-0); border-top: var(--border) solid var(--border-subtle);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.04);
 }
-.jobbar .warnings { display: flex; align-items: center; gap: var(--space-2); flex: 1; min-width: 0; }
-.jobbar .estimate { display: flex; align-items: baseline; gap: var(--space-2); }
-.jobbar .estimate .value { font-size: var(--font-xl); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+.jobbar-row { display: flex; align-items: center; gap: var(--space-2); min-height: 24px; }
+.jobbar .warnings { display: flex; align-items: center; gap: var(--space-2); flex: 1; min-width: 0; font-size: var(--font-sm); }
+.jobbar .estimate { display: flex; align-items: baseline; gap: var(--space-1); flex: none; }
+.jobbar .estimate .value { font-size: var(--font-lg); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
 .jobbar .actions { display: flex; gap: var(--space-2); }
-.progress { height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; position: absolute; left: 0; right: 0; top: 0; }
+.jobbar .actions #btn-generate { flex: 1; }
+.progress { height: 3px; background: transparent; overflow: hidden; position: absolute; left: 0; right: 0; top: -1px; }
 .progress.busy::after { content: ""; display: block; height: 100%; width: 40%; background: var(--accent); animation: slide 1.2s infinite; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-.jobbar { position: relative; }
 
 /* toast */
 .toast {
@@ -508,9 +510,8 @@ table.ops td.num, table.ops th.num { text-align: right; font-variant-numeric: ta
 
 /* responsive */
 @media (max-width: 1024px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: auto 55vh 1fr var(--jobbar-h); grid-template-areas: "header" "canvas" "inspector" "jobbar"; }
+  .app { grid-template-columns: 1fr; grid-template-rows: 55vh 1fr; grid-template-areas: "canvas" "inspector"; }
   .color-bar { gap: var(--space-2); }
   .color-bar-info { width: 130px; }
-  .color-bar-swatches { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
   .inspector { border-left: 0; border-top: var(--border) solid var(--border-subtle); }
 }

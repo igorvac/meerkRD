@@ -604,7 +604,13 @@ function renderColorBar() {
   const job = state.job;
   const bar = $("color-bar");
   const ops = job?.params?.operations;
-  if (!job?.analysis || !ops?.length || state.canvasMode === "move") { bar.hidden = true; return; }
+  const msg = $("bottom-msg");
+  if (!job?.analysis || !ops?.length || state.canvasMode === "move") {
+    bar.hidden = true;
+    msg.textContent = !job ? "" : !job.analysis ? "Nesteie as peças para atribuir as cores às operações." : state.canvasMode === "move" ? "Modo Mover peças: arraste as peças na mesa. Tecla V volta ao modo de cores." : "";
+    return;
+  }
+  msg.textContent = "";
   bar.hidden = false;
   const n = state.selected.size;
   bar.classList.toggle("armed", n > 0);
@@ -1005,7 +1011,7 @@ function renderLayoutBadges() {
   if (issues.overlaps.length) chips.push(`<span class="chip danger">${icon("critical")} ${issues.overlaps.length} sobreposição(ões) entre peças</span>`);
   if (issues.scaled.length) chips.push(`<span class="chip warn" title="A escala muda o tamanho real do corte. Confira as medidas antes de gerar.">${icon("warning")} ${issues.scaled.length} peça(s) com escala alterada</span>`);
   if (job.status === "relayout" || layoutPending(job)) chips.push(`<span class="chip info">Atualizando pré-visualização…</span>`);
-  if (state.canvasMode === "move" && state.pieces.size === 0) chips.push(`<span class="chip">${icon("move")} Clique ou arraste uma peça para movê-la · arraste na mesa vazia para selecionar várias · Espaço+arrastar ou botão do meio: pan</span>`);
+  if (state.canvasMode === "move" && state.pieces.size === 0) chips.push(`<span class="chip">${icon("move")} Arraste uma peça para movê-la · arraste na mesa vazia para selecionar várias · Espaço+arrastar: pan</span>`);
   box.innerHTML = chips.join("");
 }
 

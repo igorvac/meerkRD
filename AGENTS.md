@@ -39,8 +39,9 @@ service/
                           execução, timeout, contenção de crash)
   core/nesting.py         shelf packing por bounding box, Python puro
   core/headless_raster.py substitui o renderizador wx para operações raster
-  web/index.html          layout: header, canvas + barra de cores, painel lateral
-                          em 3 etapas recolhíveis, barra de ações
+  web/index.html          layout: canvas + barra inferior (status, cores, tema),
+                          painel lateral em 3 etapas recolhíveis com rodapé fixo
+                          de ações (gerar/baixar, estimativa, avisos)
   web/app.js              SPA sem framework (~1.1k linhas): estado, render*, ações
   web/styles.css          tokens de design no primeiro bloco; resto não deveria
                           precisar de edição para re-skin

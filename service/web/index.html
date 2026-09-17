@@ -8,13 +8,6 @@
 </head>
 <body>
   <div class="app" id="app">
-    <header class="header">
-      <div class="brand" id="brand"><span id="brand-icon"></span> Laser RD</div>
-      <div class="spacer"></div>
-      <div class="status-pill" id="status-pill" aria-live="polite"><span class="dot"></span><span id="status-text">Pronto</span></div>
-      <button class="btn ghost icon-only" id="theme-toggle" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
-    </header>
-
     <main class="canvas dropzone" id="canvas">
       <div class="canvas-viewport" id="canvas-viewport">
         <div class="bed-wrap" id="bed-wrap" hidden>
@@ -58,19 +51,27 @@
           </div>
         </div>
       </div>
-      <div class="color-bar" id="color-bar" hidden aria-label="Cores das operações">
-        <div class="color-bar-info" id="color-bar-info"></div>
-        <div class="color-bar-swatches" id="color-bar-swatches"></div>
-        <div class="color-bar-actions">
-          <button class="btn sm ghost" id="btn-select-all" title="Selecionar todas as formas do desenho">Selecionar tudo</button>
-          <button class="btn sm ghost" id="btn-clear-selection" title="Limpar seleção (Esc)" hidden>Limpar</button>
+      <div class="bottom-bar" id="bottom-bar">
+        <div class="progress" id="progress"></div>
+        <div class="brand" id="brand" title="Laser RD"><span id="brand-icon"></span></div>
+        <div class="status-pill" id="status-pill" aria-live="polite"><span class="dot"></span><span id="status-text">Pronto</span></div>
+        <div class="color-bar" id="color-bar" hidden aria-label="Cores das operações">
+          <div class="color-bar-info" id="color-bar-info"></div>
+          <div class="color-bar-swatches" id="color-bar-swatches"></div>
+          <div class="color-bar-actions">
+            <button class="btn sm ghost" id="btn-select-all" title="Selecionar todas as formas do desenho">Selecionar tudo</button>
+            <button class="btn sm ghost" id="btn-clear-selection" title="Limpar seleção (Esc)" hidden>Limpar</button>
+          </div>
         </div>
+        <div class="bottom-msg muted small" id="bottom-msg"></div>
+        <button class="btn ghost icon-only" id="theme-toggle" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
       </div>
       <input type="file" id="file-input" accept=".dxf,.svg,.svgz,.lbrn,.lbrn2,.xcs,.png,.jpg,.jpeg,.bmp" multiple hidden />
       <input type="file" id="file-input-add" accept=".dxf,.svg,.svgz,.lbrn,.lbrn2,.xcs,.png,.jpg,.jpeg,.bmp" multiple hidden />
     </main>
 
     <aside class="inspector" id="inspector">
+      <div class="inspector-scroll" id="inspector-scroll">
       <section class="step-panel" id="panel-1" data-step="1">
         <button type="button" class="step-head" data-open-step="1" aria-expanded="false" aria-controls="panel-1-body">
           <span class="num">1</span>
@@ -218,17 +219,18 @@
           <div class="section"><div class="history" id="history"></div></div>
         </div>
       </section>
-    </aside>
-
-    <footer class="jobbar" id="jobbar">
-      <div class="progress" id="progress"></div>
-      <div class="warnings" id="jobbar-warnings"></div>
-      <div class="estimate" id="jobbar-estimate" hidden><span class="value" id="estimate-value">—</span><span class="muted small">tempo estimado</span></div>
-      <div class="actions">
-        <button class="btn primary lg" id="btn-generate" disabled>Gerar arquivo</button>
-        <button class="btn lg" id="btn-download" disabled>Baixar .rd</button>
       </div>
-    </footer>
+      <footer class="jobbar" id="jobbar">
+        <div class="jobbar-row">
+          <div class="warnings" id="jobbar-warnings"></div>
+          <div class="estimate" id="jobbar-estimate" hidden><span class="value" id="estimate-value">—</span><span class="muted small">estimado</span></div>
+        </div>
+        <div class="actions">
+          <button class="btn primary lg" id="btn-generate" disabled>Gerar arquivo</button>
+          <button class="btn lg" id="btn-download" disabled>Baixar .rd</button>
+        </div>
+      </footer>
+    </aside>
   </div>
   <div id="toast-root"></div>
   <script type="module" src="app.js"></script>
