@@ -779,9 +779,14 @@ def delete_part(job_id: str, part_id: str):
 
 @app.post("/api/jobs/{job_id}/nest", dependencies=[Depends(require_key)], status_code=202)
 def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
+    """spacing_mm: gap the nesting leaves between copies; margin_mm: inset
+    from the bed's edges. Both are remembered on the job so re-nesting and
+    the form show what was actually used."""
     job = load_job(job_id)
     if job["status"] in BUSY_STATUSES:
         raise HTTPException(409, "Aguarde o processamento atual terminar")
+    if not 0 <= spacing_mm <= 200 or not 0 <= margin_mm <= 200:
+        raise HTTPException(400, "Espaço entre peças e margem devem estar entre 0 e 200 mm")
     active = [p for p in job["parts"] if p["enabled"]]
     if not active:
         raise HTTPException(409, "Nenhuma peça ativa para posicionar")
@@ -834,6 +839,8 @@ def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
             "nest_placements": [dict(p) for p in placements],
             "unplaced_part_ids": unplaced_part_ids,
             "used_height_mm": result.used_height,
+            "nest_spacing_mm": spacing_mm,
+            "nest_margin_mm": margin_mm,
         }
     )
     save_job(job)

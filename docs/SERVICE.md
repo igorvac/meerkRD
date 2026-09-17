@@ -58,10 +58,14 @@ Variáveis de ambiente:
    elementos) → quando todas terminam, status `parts_ready`. Dá para ajustar
    **quantidade** (cópias) e **girar 90°** por peça, e `POST /api/jobs/{id}/parts`
    para adicionar mais arquivos ao mesmo projeto a qualquer momento.
-3. `POST /api/jobs/{id}/nest` → `service/core/nesting.py` (puro Python, sem
-   subprocess) empacota cada cópia pedida na mesa (shelf packing por retângulo
-   delimitador, com rotação 0°/90°); peças que não couberem ficam em
-   `unplaced_part_ids` e viram aviso. Em seguida dispara `action=analyze_nested`:
+3. `POST /api/jobs/{id}/nest?spacing_mm=5&margin_mm=5` → `service/core/nesting.py`
+   (puro Python, sem subprocess) empacota cada cópia pedida na mesa (shelf
+   packing por retângulo delimitador, com rotação 0°/90°). `spacing_mm` é o
+   espaço deixado entre as cópias e `margin_mm` o recuo das bordas da mesa
+   (0–200 mm; a interface mostra os dois campos acima de "Nestear peças",
+   lembra os últimos valores usados e o job guarda `nest_spacing_mm` /
+   `nest_margin_mm`). Peças que não couberem ficam em `unplaced_part_ids` e
+   viram aviso. Em seguida dispara `action=analyze_nested`:
    carrega cada instância na posição calculada (cada forma recebe um id estável
    `<peça>#<cópia>:<índice>`), agrega operações por **nome de layer entre todas
    as peças/cópias** (todo "CUT" de todo arquivo vira uma única operação Cut) e

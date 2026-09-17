@@ -329,6 +329,16 @@ function renderParts() {
     .join("");
   const allReady = job.parts.length > 0 && job.parts.every((p) => p.status === "ready");
   nestBox.hidden = !allReady;
+  // Show what this job was nested with (or the last values used). Only when
+  // the job or its nesting changes - never over what the user is typing.
+  const syncKey = `${job.id}:${job.nest_spacing_mm ?? ""}:${job.nest_margin_mm ?? ""}`;
+  if (nestBox.dataset.syncedFor !== syncKey) {
+    nestBox.dataset.syncedFor = syncKey;
+    let remembered = null;
+    try { remembered = JSON.parse(localStorage.getItem("rd_nest_options") || "null"); } catch {}
+    $("nest-spacing").value = job.nest_spacing_mm ?? remembered?.spacing ?? 5;
+    $("nest-margin").value = job.nest_margin_mm ?? remembered?.margin ?? 5;
+  }
   const nestBtn = $("btn-nest");
   nestBtn.disabled = !allReady || BUSY_STATUSES.has(job.status);
   // job.analysis is only ever set right after a successful nest, and the
@@ -336,11 +346,15 @@ function renderParts() {
   // - so its presence *is* the "still matches what's on screen" signal.
   nestBtn.innerHTML = job.analysis ? `${icon("regenerate")} Nestear novamente` : `${icon("play")} Nestear peças`;
   const totalCopies = job.parts.reduce((n, p) => n + (p.enabled ? p.quantity : 0), 0);
+  const { spacing, margin } = nestOptions();
+  const changed = job.analysis && (job.nest_spacing_mm != null && (spacing !== job.nest_spacing_mm || margin !== job.nest_margin_mm));
   $("nest-hint").textContent = job.analysis
-    ? hasManualLayout(job)
-      ? `Layout ajustado à mão no canvas. Nestear de novo descarta esses ajustes.`
-      : `Nesting atual: ${totalCopies} cópia(s) posicionada(s). Para ajustar à mão, use "Mover peças" no canvas.`
-    : `Posiciona ${totalCopies} cópia(s) automaticamente na mesa.`;
+    ? changed
+      ? `Nesteado com ${job.nest_spacing_mm} mm entre peças e ${job.nest_margin_mm} mm de margem. Nesteie de novo para aplicar os novos valores.`
+      : hasManualLayout(job)
+        ? `Layout ajustado à mão no canvas. Nestear de novo descarta esses ajustes.`
+        : `Nesting atual: ${totalCopies} cópia(s) com ${job.nest_spacing_mm ?? 5} mm entre elas. Para ajustar à mão, use "Mover peças" no canvas.`
+    : `Posiciona ${totalCopies} cópia(s) automaticamente na mesa, com ${spacing} mm entre elas.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1578,12 +1592,20 @@ function confirmDiscardLayout(job, what) {
   if (!hasManualLayout(job)) return true;
   return confirm(`${what} refaz o nesting e descarta as posições, rotações e escalas ajustadas à mão no canvas. Continuar?`);
 }
+function nestOptions() {
+  // The gap between copies and the inset from the bed edge, as typed; the
+  // last values used are remembered for the next job.
+  const read = (id, fallback) => { const v = Number($(id).value); return Number.isFinite(v) && v >= 0 ? Math.min(200, v) : fallback; };
+  return { spacing: read("nest-spacing", 5), margin: read("nest-margin", 5) };
+}
 async function runNest() {
   const job = state.job;
   if (!job) return;
   if (!confirmDiscardLayout(job, "Nestear novamente")) return;
+  const { spacing, margin } = nestOptions();
+  try { localStorage.setItem("rd_nest_options", JSON.stringify({ spacing, margin })); } catch {}
   try {
-    state.job = await api(`/api/jobs/${job.id}/nest`, { method: "POST" });
+    state.job = await api(`/api/jobs/${job.id}/nest?spacing_mm=${spacing}&margin_mm=${margin}`, { method: "POST" });
     state.selected.clear();
     state.viewJobId = null; // re-fit the view to the new layout when it arrives
     renderAll();
@@ -1951,6 +1973,10 @@ function bind() {
     if (rotatable) return patchPart(rotatable.dataset.rotatable, { rotatable: rotatable.checked });
   });
   $("btn-nest").onclick = runNest;
+  for (const id of ["nest-spacing", "nest-margin"]) {
+    $(id).addEventListener("input", () => renderParts());
+    $(id).addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("btn-nest").disabled) runNest(); });
+  }
 
   $("color-bar-swatches").addEventListener("click", (e) => {
     const swatch = e.target.closest(".swatch-btn");

@@ -372,3 +372,18 @@ def test_legacy_placements_are_normalized_on_read(client):
     assert p["cx_mm"] == pytest.approx(p["x_mm"] + p["width_mm"] / 2)
     assert p["rotation_deg"] == 0 and p["scale"] == 1
     assert layout_key(job["nest_placements"]) == layout_key(job["placements"]) == layout_key(job["rendered_placements"])
+
+
+def test_nest_spacing_and_margin_are_applied_and_remembered(client):
+    res = upload(client, [("a.dxf", EXAMPLE), ("b.dxf", EXAMPLE)])
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    res = client.post(f"/api/jobs/{job_id}/nest?spacing_mm=20&margin_mm=12")
+    assert res.status_code == 202, res.text
+    job = wait_status(client, job_id, {"ready_for_params"})
+    assert job["nest_spacing_mm"] == 20 and job["nest_margin_mm"] == 12
+    first, second = sorted(job["nest_placements"], key=lambda p: p["x_mm"])
+    assert first["x_mm"] == pytest.approx(12) and first["y_mm"] == pytest.approx(12)
+    assert second["x_mm"] == pytest.approx(first["x_mm"] + first["width_mm"] + 20, abs=0.01)
+    assert client.post(f"/api/jobs/{job_id}/nest?spacing_mm=-1").status_code == 400
+    assert client.post(f"/api/jobs/{job_id}/nest?margin_mm=500").status_code == 400
