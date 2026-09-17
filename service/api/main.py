@@ -52,7 +52,7 @@ WORKERS = int(os.environ.get("RD_WORKERS", "2"))
 MAX_UPLOAD = int(os.environ.get("RD_MAX_UPLOAD_MB", "25")) * 1024 * 1024
 MAX_PARTS = int(os.environ.get("RD_MAX_PARTS", "40"))
 ALLOWED_EXT = {"dxf", "svg", "svgz", "lbrn", "lbrn2", "xcs", "png", "jpg", "jpeg", "bmp"}
-BUSY_STATUSES = ("analyzing_parts", "nesting", "generating")
+BUSY_STATUSES = ("analyzing_parts", "nesting", "relayout", "generating")
 
 OP_DEFAULTS = {
     "cut": {"speed_mm_s": 10, "power_pct": 60, "passes": 1, "kerf_mm": 0.0},
@@ -149,6 +149,29 @@ class JobParams(BaseModel):
         return value
 
 
+class PlacementUpdate(BaseModel):
+    """Where one copy of a part sits on the bed. Scale and rotation are about
+    the center of the copy's own bounding box, then that center goes to
+    (cx_mm, cy_mm) - see service/core/mk_job.py:position_part_instance."""
+
+    part_id: str
+    instance_index: int = Field(ge=1)
+    cx_mm: float
+    cy_mm: float
+    rotation_deg: float = 0.0
+    scale: float = Field(default=1.0, ge=0.1, le=10)
+
+    @field_validator("rotation_deg")
+    @classmethod
+    def _normalize_angle(cls, value):
+        value = float(value) % 360.0
+        return 0.0 if abs(value) < 1e-9 or abs(value - 360.0) < 1e-9 else value
+
+
+class LayoutUpdate(BaseModel):
+    placements: List[PlacementUpdate]
+
+
 class PartUpdate(BaseModel):
     quantity: Optional[int] = Field(default=None, ge=1, le=500)
     rotatable: Optional[bool] = None
@@ -214,8 +237,40 @@ def job_path(job_id):
     return path
 
 
+def normalize_placement(p):
+    """Layouts written before manual editing existed only have the nesting's
+    top-left corner and 90-degree flag; give them the center/rotation/scale
+    form everything now reads. For 0/90-degree boxes the two are identical."""
+    if p.get("cx_mm") is not None:
+        return p
+    p = dict(p)
+    p.update(
+        {
+            "cx_mm": p["x_mm"] + p["width_mm"] / 2,
+            "cy_mm": p["y_mm"] + p["height_mm"] / 2,
+            "rotation_deg": 90.0 if p.get("rotated") else 0.0,
+            "scale": 1.0,
+        }
+    )
+    return p
+
+
+def normalize_job(job):
+    if job.get("placements"):
+        job["placements"] = [normalize_placement(p) for p in job["placements"]]
+        if not job.get("nest_placements"):
+            job["nest_placements"] = [dict(p) for p in job["placements"]]
+        if not job.get("rendered_placements") and job.get("analysis"):
+            job["rendered_placements"] = [dict(p) for p in job["placements"]]
+    return job
+
+
+def read_job(path):
+    return normalize_job(read_json(path))
+
+
 def load_job(job_id):
-    return read_json(job_path(job_id) / "job.json")
+    return read_job(job_path(job_id) / "job.json")
 
 
 def save_job(job):
@@ -226,7 +281,7 @@ def save_job(job):
 def update_job(job_id, **changes):
     with _lock:
         path = JOBS_DIR / job_id / "job.json"
-        job = read_json(path)
+        job = read_job(path)
         job.update(changes)
         job["updated_at"] = now()
         write_json(path, job)
@@ -239,7 +294,7 @@ def mutate_part(job_id, part_id, mutator):
     concurrently with each other."""
     with _lock:
         path = JOBS_DIR / job_id / "job.json"
-        job = read_json(path)
+        job = read_job(path)
         for p in job["parts"]:
             if p["id"] == part_id:
                 mutator(p)
@@ -281,6 +336,8 @@ def reset_nesting_state(job):
         {
             "status": "analyzing_parts" if any_pending else "parts_ready",
             "placements": None,
+            "nest_placements": None,
+            "rendered_placements": None,
             "unplaced_part_ids": [],
             "analysis": None,
             "params": None,
@@ -411,16 +468,89 @@ def analyze_nested_worker(job_id):
     if not result.get("ok"):
         update_job(job_id, status="failed", error=result.get("error"))
         return
-    analysis = {k: result[k] for k in ("elements", "operations", "assignments", "bbox_mm", "bed_mm", "outside_bed")}
+    analysis = analysis_from_result(result)
     params = default_params(analysis)
     update_job(
         job_id,
         status="ready_for_params",
         analysis=analysis,
         params=params,
+        placements=placements_with_bounds(job["placements"], result),
+        rendered_placements=placements_with_bounds(job["placements"], result),
         artifacts={"preview_svg": f"/api/jobs/{job_id}/artifacts/preview.svg"},
         error=None,
     )
+
+
+def analysis_from_result(result):
+    return {k: result[k] for k in ("elements", "operations", "assignments", "bbox_mm", "bed_mm", "outside_bed")}
+
+
+def layout_key(placements):
+    """What actually defines a layout: x/y/width/height are informational."""
+    return [
+        (p["part_id"], p["instance_index"], round(p["cx_mm"], 4), round(p["cy_mm"], 4), round(p["rotation_deg"], 4), round(p["scale"], 6))
+        for p in placements or []
+    ]
+
+
+def placements_with_bounds(placements, result):
+    """Copies the engine-measured bounding box of every instance back into
+    its placement (x/y/width/height are informational: the engine positions
+    by center, and after a rotation only it knows the exact box)."""
+    boxes = result.get("instances") or {}
+    out = []
+    for p in placements:
+        p = dict(p)
+        box = boxes.get(f"{p['part_id']}#{p['instance_index']}")
+        if box:
+            p.update({"x_mm": box[0], "y_mm": box[1], "width_mm": box[2] - box[0], "height_mm": box[3] - box[1]})
+        out.append(p)
+    return out
+
+
+def relayout_worker(job_id):
+    """Re-runs analyze_nested after the user moved/rotated/scaled copies on
+    the canvas, so preview.svg and the bounding boxes match the new layout.
+    Element ids only depend on load order (part, copy), never on position,
+    so operations and assignments survive untouched. Loops while placements
+    keep changing underneath (the canvas commits every drag as it ends), so a
+    burst of edits costs at most one extra run."""
+    while True:
+        job = load_job(job_id)
+        placements = job["placements"]
+        profile = get_profile(job["profile_id"])
+        result = run_job(
+            JOBS_DIR / job_id,
+            {
+                "action": "analyze_nested",
+                "parts": enabled_parts_for_engine(job),
+                "placements": placements,
+                "profile": profile,
+            },
+        )
+        if not result.get("ok"):
+            update_job(job_id, status="failed", error=result.get("error"))
+            return
+        analysis = analysis_from_result(result)
+        with _lock:
+            path = JOBS_DIR / job_id / "job.json"
+            job = read_job(path)
+            same_ids = job.get("analysis") and {e["id"] for e in job["analysis"]["elements"]} == {e["id"] for e in analysis["elements"]}
+            job["analysis"] = analysis
+            if not (same_ids and job.get("params")):
+                job["params"] = default_params(analysis)
+            rendered = placements_with_bounds(placements, result)
+            job["rendered_placements"] = rendered
+            if layout_key(job["placements"]) == layout_key(placements):
+                job["placements"] = rendered
+            job["updated_at"] = now()
+            done = layout_key(job["placements"]) == layout_key(rendered)
+            if done:
+                job["status"] = job.pop("status_before_relayout", None) or "ready_for_params"
+            write_json(path, job)
+        if done:
+            return
 
 
 def generate_worker(job_id):
@@ -684,6 +814,10 @@ def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
             {
                 "part_id": part_id,
                 "instance_index": int(instance_index),
+                "cx_mm": p.x + p.width / 2,
+                "cy_mm": p.y + p.height / 2,
+                "rotation_deg": 90.0 if p.rotated else 0.0,
+                "scale": 1.0,
                 "x_mm": p.x,
                 "y_mm": p.y,
                 "width_mm": p.width,
@@ -697,6 +831,7 @@ def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
         {
             "status": "nesting",
             "placements": placements,
+            "nest_placements": [dict(p) for p in placements],
             "unplaced_part_ids": unplaced_part_ids,
             "used_height_mm": result.used_height,
         }
@@ -709,6 +844,67 @@ def nest(job_id: str, spacing_mm: float = 5.0, margin_mm: float = 5.0):
 @app.get("/api/jobs/{job_id}", dependencies=[Depends(require_key)])
 def get_job(job_id: str):
     return public_job(load_job(job_id))
+
+
+def start_relayout(job):
+    """Stores the layout as-is and makes sure a relayout worker is running.
+    Safe to call while one already is: the worker re-reads placements and
+    loops until what it analyzed is what is stored."""
+    job = dict(job)
+    if job["status"] != "relayout":
+        job["status_before_relayout"] = job["status"]
+        job["status"] = "relayout"
+        # The toolpath drawn for the previous layout no longer applies.
+        job["artifacts"] = {k: v for k, v in job.get("artifacts", {}).items() if k != "path_svg"}
+        save_job(job)
+        submit(partial(relayout_worker, job["id"]), job["id"])
+    else:
+        save_job(job)
+    return job
+
+
+@app.put("/api/jobs/{job_id}/layout", dependencies=[Depends(require_key)])
+def set_layout(job_id: str, body: LayoutUpdate):
+    """Manual layout: moves, rotates and scales copies the nesting placed.
+    The set of copies cannot change here (that is what re-nesting is for),
+    so analysis, operations and assignments are all kept."""
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES and job["status"] != "relayout":
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    if not job.get("placements") or not job.get("analysis"):
+        raise HTTPException(409, "Posicione as peças (Nestear) antes de editar o layout")
+    current = {(p["part_id"], p["instance_index"]): p for p in job["placements"]}
+    incoming = {(p.part_id, p.instance_index): p for p in body.placements}
+    if set(current) != set(incoming):
+        raise HTTPException(400, "O layout precisa conter exatamente as mesmas cópias do nesting")
+    placements = []
+    for key, old in current.items():
+        new = incoming[key]
+        merged = dict(old)
+        merged.update({"cx_mm": new.cx_mm, "cy_mm": new.cy_mm, "rotation_deg": new.rotation_deg, "scale": new.scale})
+        placements.append(merged)
+    job = dict(job)
+    job["placements"] = placements
+    job["updated_at"] = now()
+    if job.get("status") == "ready" or job.get("status_before_relayout") == "ready":
+        job["stale"] = True
+    return public_job(start_relayout(job))
+
+
+@app.post("/api/jobs/{job_id}/layout/reset", dependencies=[Depends(require_key)])
+def reset_layout(job_id: str):
+    """Puts every copy back where the nesting left it."""
+    job = load_job(job_id)
+    if job["status"] in BUSY_STATUSES and job["status"] != "relayout":
+        raise HTTPException(409, "Aguarde o processamento atual terminar")
+    if not job.get("nest_placements"):
+        raise HTTPException(409, "Este trabalho não tem um nesting para restaurar")
+    job = dict(job)
+    job["placements"] = [dict(p) for p in job["nest_placements"]]
+    job["updated_at"] = now()
+    if job.get("status") == "ready" or job.get("status_before_relayout") == "ready":
+        job["stale"] = True
+    return public_job(start_relayout(job))
 
 
 @app.put("/api/jobs/{job_id}/params", dependencies=[Depends(require_key)])

@@ -167,3 +167,34 @@ def test_generate_skips_unfitted_parts_gracefully(job_dir):
     placements, unplaced = nested_placements(huge, PROFILE["bed_mm"])
     assert unplaced == ["bracket#1"]
     assert placements == []
+
+
+def test_placement_rotation_and_scale_position_by_center(job_dir):
+    """A copy scaled to 50 % and rotated 37 degrees ends up with its base
+    center at (cx, cy) and the bounding box of the rotated rectangle; a
+    legacy placement (top-left corner + rotated flag) still works."""
+    result = run_action(
+        job_dir,
+        {
+            "action": "analyze_nested",
+            "parts": [{"id": "bracket", "file": "bracket.dxf"}],
+            "placements": [
+                {"part_id": "bracket", "instance_index": 1, "cx_mm": 70, "cy_mm": 50, "rotation_deg": 0, "scale": 1},
+                {"part_id": "bracket", "instance_index": 2, "cx_mm": 200, "cy_mm": 80, "rotation_deg": 37, "scale": 0.5},
+                {"part_id": "bracket", "instance_index": 3, "x_mm": 300, "y_mm": 300, "width_mm": 80, "height_mm": 120, "rotated": True},
+            ],
+            "profile": PROFILE,
+        },
+    )
+    assert result["ok"], result.get("error")
+    boxes = result["instances"]
+    assert boxes["bracket#1"] == pytest.approx([10, 10, 130, 90], abs=0.01)
+    import math
+
+    w, h = 120 * 0.5, 80 * 0.5
+    c, s = math.cos(math.radians(37)), math.sin(math.radians(37))
+    bw, bh = w * c + h * s, w * s + h * c
+    assert boxes["bracket#2"] == pytest.approx([200 - bw / 2, 80 - bh / 2, 200 + bw / 2, 80 + bh / 2], abs=0.01)
+    assert boxes["bracket#3"] == pytest.approx([300, 300, 380, 420], abs=0.01)
+    # Ids do not depend on where a copy sits.
+    assert sorted(e["id"] for e in result["elements"] if e["id"].startswith("bracket#2:")) == [f"bracket#2:{i}" for i in range(5)]

@@ -25,6 +25,11 @@ const state = {
   historyOpen: null, // null = automatic (open without a job), true/false = user's choice
   lastRenderedStep: null,
   panelFolded: false, // the current step's panel was folded by hand
+  canvasMode: "select", // "select": shapes -> operations; "move": drag copies around the bed
+  pieces: new Set(), // selected copies ("<part>#<copy>") in move mode
+  drag: null, // active move/rotate/scale/marquee gesture
+  layoutTimer: null,
+  layoutDirty: false, // placements edited locally and not yet stored
 };
 
 // Palette shown in the color bar under the canvas, LightBurn/RDWorks style:
@@ -39,7 +44,7 @@ const OP_SETTING_KEYS = ["type", "label", "speed_mm_s", "power_pct", "passes", "
 const HIT_TAGS = new Set(["path", "polyline", "polygon", "line", "rect", "circle", "ellipse"]);
 const ZOOM_MIN = 0.5, ZOOM_MAX = 80;
 
-const BUSY_STATUSES = new Set(["analyzing_parts", "nesting", "generating"]);
+const BUSY_STATUSES = new Set(["analyzing_parts", "nesting", "relayout", "generating"]);
 const PART_STATUS_LABEL = { analyzing: "Analisando…", ready: "Pronta", failed: "Falhou" };
 
 const $ = (id) => document.getElementById(id);
@@ -332,7 +337,9 @@ function renderParts() {
   nestBtn.innerHTML = job.analysis ? `${icon("regenerate")} Nestear novamente` : `${icon("play")} Nestear peças`;
   const totalCopies = job.parts.reduce((n, p) => n + (p.enabled ? p.quantity : 0), 0);
   $("nest-hint").textContent = job.analysis
-    ? `Nesting atual: ${totalCopies} cópia(s) posicionada(s). Nesteie de novo só se quiser recalcular o layout.`
+    ? hasManualLayout(job)
+      ? `Layout ajustado à mão no canvas. Nestear de novo descarta esses ajustes.`
+      : `Nesting atual: ${totalCopies} cópia(s) posicionada(s). Para ajustar à mão, use "Mover peças" no canvas.`
     : `Posiciona ${totalCopies} cópia(s) automaticamente na mesa.`;
 }
 
@@ -353,28 +360,41 @@ function renderCanvas() {
     $("canvas-nav").hidden = true;
     $("color-bar").hidden = true;
     $("canvas-badges").innerHTML = `<span class="chip info">Peças na lista ao lado — aperte "Nestear peças" para posicioná-las na mesa</span>`;
+    $("layout-badges").innerHTML = "";
+    $("piece-box").hidden = true;
     return;
   }
   wrap.hidden = !job?.analysis;
   $("canvas-nav").hidden = !job?.analysis;
-  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; $("color-bar").hidden = true; return; }
+  if (!job?.analysis) { $("canvas-badges").innerHTML = ""; $("layout-badges").innerHTML = ""; $("piece-box").hidden = true; $("color-bar").hidden = true; return; }
   fitBed(bed);
   if (state.viewJobId !== job.id) resetView(); else applyView();
+  renderCanvasMode();
   $("bed-label").textContent = `${bed[0]} × ${bed[1]} mm — ${p?.name || ""}`;
   const previewUrl = job.artifacts?.preview_svg;
-  if (previewUrl && $("layer-preview").dataset.src !== previewUrl + job.updated_at) {
-    $("layer-preview").dataset.src = previewUrl + job.updated_at;
+  // The preview only changes when the engine redraws it, i.e. when the
+  // placements it was rendered from change - not on every job update.
+  const previewKey = previewUrl + job.id + JSON.stringify(job.rendered_placements || null);
+  if (previewUrl && $("layer-preview").dataset.src !== previewKey) {
+    $("layer-preview").dataset.src = previewKey;
     fetch(previewUrl).then((r) => r.text()).then((svg) => {
+      if ($("layer-preview").dataset.src !== previewKey) return; // a newer preview won
       $("layer-preview").innerHTML = svg;
-      normalizeSvg($("layer-preview").querySelector("svg"));
+      const root = $("layer-preview").querySelector("svg");
+      normalizeSvg(root);
+      groupInstances(root);
       buildHitTargets();
       styleShapeElements();
+      applyInstanceTransforms();
       // First time we show this job: zoom in on the parts so small pieces on a
       // big bed are actually clickable. Later reloads keep the user's view.
       if (state.viewJobId !== job.id) { state.viewJobId = job.id; fitToParts(); }
     });
   } else {
+    const root = $("layer-preview").querySelector("svg");
+    if (root && !root.dataset.grouped) { groupInstances(root); buildHitTargets(); }
     styleShapeElements();
+    applyInstanceTransforms();
   }
   const pathUrl = job.status === "ready" ? job.artifacts?.path_svg : null;
   const layerPath = $("layer-path");
@@ -393,7 +413,9 @@ function renderCanvas() {
   $("nav-grid").classList.toggle("active", state.showGrid);
   $("bed-grid").hidden = !state.showGrid;
   const badges = [];
-  if (job.analysis.outside_bed) badges.push(`<span class="chip danger">${icon("critical")} Geometria fora da mesa</span>`);
+  // Once the copies are grouped the client measures the drawn geometry itself
+  // (see renderLayoutBadges); the engine's flag is the fallback before that.
+  if (job.analysis.outside_bed && !$("layer-preview").querySelector("svg")?.dataset.grouped) badges.push(`<span class="chip danger">${icon("critical")} Geometria fora da mesa</span>`);
   if (job.status === "ready" && state.showPath) badges.push(`<span class="chip info">${icon("travel")} Percurso: cores por operação, tracejado = deslocamento</span>`);
   $("canvas-badges").innerHTML = badges.join("");
   renderColorBar();
@@ -439,6 +461,7 @@ function applyView() {
   const minor = 10 * s, major = 100 * s;
   $("bed-grid").style.backgroundSize = `${major}px ${major}px, ${major}px ${major}px, ${minor}px ${minor}px, ${minor}px ${minor}px`;
   $("bed-grid").style.opacity = minor < 4 ? "0.5" : "1";
+  if (state.pieces.size) renderSelectionOverlay();
 }
 function resetView() {
   const vp = $("canvas-viewport");
@@ -567,7 +590,7 @@ function renderColorBar() {
   const job = state.job;
   const bar = $("color-bar");
   const ops = job?.params?.operations;
-  if (!job?.analysis || !ops?.length) { bar.hidden = true; return; }
+  if (!job?.analysis || !ops?.length || state.canvasMode === "move") { bar.hidden = true; return; }
   bar.hidden = false;
   const n = state.selected.size;
   bar.classList.toggle("armed", n > 0);
@@ -693,10 +716,457 @@ function selectAll() {
   renderColorBar();
 }
 function clearSelection() {
-  if (state.selected.size === 0) return;
+  if (state.selected.size === 0 && state.pieces.size === 0) return;
   state.selected.clear();
+  state.pieces.clear();
   styleShapeElements();
   renderColorBar();
+  applyInstanceTransforms();
+}
+
+// ---------------------------------------------------------------------------
+// Manual layout: moving, rotating and scaling copies on the canvas.
+//
+// The preview.svg the engine exports is the truth for what is drawn; on load
+// every copy's shapes are regrouped under <g class="svc-inst"><g class="body">
+// with their absolute matrix baked in, so one transform on the body moves the
+// whole copy. That transform is the delta between job.rendered_placements
+// (what the SVG was drawn from) and job.placements (what the user wants), in
+// exactly the sequence service/core/mk_job.py:position_part_instance applies:
+// scale and rotate about the copy's center, then move the center. When the
+// server re-analyzes, both match again and the delta is the identity.
+// ---------------------------------------------------------------------------
+const SVG_NS = "http://www.w3.org/2000/svg";
+const MOVE_SNAP_MM = 0.5, ROTATE_SNAP_DEG = 15, SCALE_MIN = 0.1, SCALE_MAX = 10;
+const HANDLE_PX = 9;
+
+const instKey = (elementId) => String(elementId).split(":")[0];
+const placementKey = (p) => `${p.part_id}#${p.instance_index}`;
+function placementOf(key, list = state.job?.placements) {
+  return (list || []).find((p) => placementKey(p) === key) || null;
+}
+function samePlacement(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(a.cx_mm - b.cx_mm) < 1e-4 && Math.abs(a.cy_mm - b.cy_mm) < 1e-4
+    && Math.abs(((a.rotation_deg - b.rotation_deg) % 360 + 360) % 360) < 1e-4 && Math.abs(a.scale - b.scale) < 1e-6;
+}
+function hasManualLayout(job) {
+  if (!job?.placements || !job?.nest_placements) return false;
+  return job.placements.some((p) => !samePlacement(p, placementOf(placementKey(p), job.nest_placements)));
+}
+function layoutPending(job) {
+  if (!job?.placements || !job?.rendered_placements) return false;
+  return job.placements.some((p) => !samePlacement(p, placementOf(placementKey(p), job.rendered_placements)));
+}
+function instanceName(key) {
+  const [partId, idx] = key.split("#");
+  const part = state.job?.parts.find((p) => p.id === partId);
+  const copies = part ? part.quantity : 1;
+  return `${part?.name || partId}${copies > 1 ? ` · cópia ${idx}` : ""}`;
+}
+function previewRoot() {
+  return $("layer-preview").querySelector("svg");
+}
+function unitsPerMm(root) {
+  const bed = state.job?.analysis?.bed_mm || [900, 600];
+  return root.viewBox.baseVal.width / bed[0];
+}
+function pxPerMm() {
+  return state.view.base ? state.view.base.scale * state.view.zoom : 1;
+}
+function groupInstances(root) {
+  // One <g> per copy, straight under the root, shapes carrying their full
+  // matrix: the export's own grouping varies by importer, this doesn't.
+  const job = state.job;
+  if (!job?.analysis || !root || root.dataset.grouped) return;
+  const rootScreen = root.getScreenCTM();
+  if (!rootScreen) return; // not laid out yet; the next render tries again
+  const inv = rootScreen.inverse();
+  const bodies = new Map();
+  for (const info of job.analysis.elements) {
+    const el = root.getElementById(info.id);
+    if (!el) continue;
+    const key = instKey(info.id);
+    let body = bodies.get(key);
+    if (!body) {
+      const outer = document.createElementNS(SVG_NS, "g");
+      outer.setAttribute("class", "svc-inst");
+      outer.dataset.inst = key;
+      body = document.createElementNS(SVG_NS, "g");
+      body.setAttribute("class", "svc-inst-body");
+      outer.appendChild(body);
+      root.appendChild(outer);
+      bodies.set(key, body);
+    }
+    const screen = el.getScreenCTM();
+    if (screen) {
+      const m = inv.multiply(screen);
+      el.setAttribute("transform", `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})`);
+    }
+    body.appendChild(el);
+  }
+  for (const g of [...root.querySelectorAll("g:not(.svc-inst):not(.svc-inst-body)")]) if (!g.querySelector("*")) g.remove();
+  root.dataset.grouped = "1";
+}
+function deltaTransform(rendered, current, upm) {
+  // Applied right-to-left: scale about the rendered center, rotate about it,
+  // then translate the center - the same order the engine uses.
+  const px = rendered.cx_mm * upm, py = rendered.cy_mm * upm;
+  const ds = current.scale / rendered.scale;
+  const dth = current.rotation_deg - rendered.rotation_deg;
+  const tx = (current.cx_mm - rendered.cx_mm) * upm, ty = (current.cy_mm - rendered.cy_mm) * upm;
+  return `translate(${tx} ${ty}) rotate(${dth} ${px} ${py}) translate(${px} ${py}) scale(${ds}) translate(${-px} ${-py})`;
+}
+function applyInstanceTransforms(override = null) {
+  // override: Map key -> placement, used mid-gesture before anything is committed.
+  const job = state.job;
+  const root = previewRoot();
+  if (!job?.placements || !root?.dataset.grouped) return;
+  const upm = unitsPerMm(root);
+  for (const outer of root.querySelectorAll(".svc-inst")) {
+    const key = outer.dataset.inst;
+    const rendered = placementOf(key, job.rendered_placements) || placementOf(key);
+    const current = override?.get(key) || placementOf(key);
+    const body = outer.firstElementChild;
+    if (!rendered || !current || samePlacement(rendered, current)) body.removeAttribute("transform");
+    else body.setAttribute("transform", deltaTransform(rendered, current, upm));
+    outer.classList.toggle("selected", state.pieces.has(key));
+    outer.classList.toggle("moved", !samePlacement(current, placementOf(key, job.nest_placements)));
+  }
+  renderSelectionOverlay();
+  renderLayoutBadges();
+}
+function instanceBox(key) {
+  // Exact axis-aligned box of the copy as drawn (after its delta), in mm.
+  const root = previewRoot();
+  const outer = root?.querySelector(`.svc-inst[data-inst="${CSS.escape(key)}"]`);
+  if (!outer) return null;
+  const b = outer.getBBox();
+  const upm = unitsPerMm(root);
+  return { x0: b.x / upm, y0: b.y / upm, x1: (b.x + b.width) / upm, y1: (b.y + b.height) / upm };
+}
+function allInstanceKeys() {
+  return (state.job?.placements || []).map(placementKey);
+}
+function unionBox(boxes) {
+  const list = boxes.filter(Boolean);
+  if (!list.length) return null;
+  return {
+    x0: Math.min(...list.map((b) => b.x0)), y0: Math.min(...list.map((b) => b.y0)),
+    x1: Math.max(...list.map((b) => b.x1)), y1: Math.max(...list.map((b) => b.y1)),
+  };
+}
+function layoutIssues() {
+  // Client-side, from the drawn geometry; the engine's own check replaces it
+  // once the re-analysis lands.
+  const bed = state.job?.analysis?.bed_mm || [900, 600];
+  const boxes = allInstanceKeys().map((key) => [key, instanceBox(key)]).filter(([, b]) => b);
+  const outside = boxes.filter(([, b]) => b.x0 < -0.01 || b.y0 < -0.01 || b.x1 > bed[0] + 0.01 || b.y1 > bed[1] + 0.01).map(([k]) => k);
+  const overlaps = [];
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i][1], b = boxes[j][1];
+      if (a.x0 < b.x1 - 0.01 && b.x0 < a.x1 - 0.01 && a.y0 < b.y1 - 0.01 && b.y0 < a.y1 - 0.01) overlaps.push([boxes[i][0], boxes[j][0]]);
+    }
+  }
+  const scaled = (state.job?.placements || []).filter((p) => Math.abs(p.scale - 1) > 1e-6).map(placementKey);
+  return { outside, overlaps, scaled };
+}
+function renderLayoutBadges() {
+  const job = state.job;
+  const box = $("layout-badges");
+  if (!job?.analysis || !previewRoot()?.dataset.grouped) { box.innerHTML = ""; return; }
+  const issues = layoutIssues();
+  const chips = [];
+  if (issues.outside.length) chips.push(`<span class="chip danger">${icon("critical")} ${issues.outside.length} peça(s) fora da mesa</span>`);
+  if (issues.overlaps.length) chips.push(`<span class="chip danger">${icon("critical")} ${issues.overlaps.length} sobreposição(ões) entre peças</span>`);
+  if (issues.scaled.length) chips.push(`<span class="chip warn" title="A escala muda o tamanho real do corte. Confira as medidas antes de gerar.">${icon("warning")} ${issues.scaled.length} peça(s) com escala alterada</span>`);
+  if (job.status === "relayout" || layoutPending(job)) chips.push(`<span class="chip info">Atualizando pré-visualização…</span>`);
+  box.innerHTML = chips.join("");
+}
+
+// --- selection overlay: dashed boxes, one frame with handles around the selection
+function renderSelectionOverlay() {
+  const svg = $("layer-select");
+  const job = state.job;
+  const bed = job?.analysis?.bed_mm || [900, 600];
+  svg.setAttribute("viewBox", `0 0 ${bed[0]} ${bed[1]}`);
+  if (state.canvasMode !== "move" || state.pieces.size === 0 || !previewRoot()?.dataset.grouped) { svg.innerHTML = ""; renderPieceBox(); return; }
+  const s = pxPerMm();
+  const boxes = [...state.pieces].map((key) => instanceBox(key));
+  const group = unionBox(boxes);
+  const parts = [];
+  for (const b of boxes) {
+    if (!b) continue;
+    parts.push(`<rect class="sel-piece" x="${b.x0}" y="${b.y0}" width="${b.x1 - b.x0}" height="${b.y1 - b.y0}" vector-effect="non-scaling-stroke"/>`);
+  }
+  if (group) {
+    const h = HANDLE_PX / s; // handle size in mm so it stays HANDLE_PX on screen
+    const pad = 3 / s;
+    const x0 = group.x0 - pad, y0 = group.y0 - pad, x1 = group.x1 + pad, y1 = group.y1 + pad;
+    parts.push(`<rect class="sel-frame" x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" vector-effect="non-scaling-stroke"/>`);
+    const cx = (x0 + x1) / 2;
+    const rotY = y0 - 22 / s;
+    parts.push(`<line class="sel-stem" x1="${cx}" y1="${y0}" x2="${cx}" y2="${rotY}" vector-effect="non-scaling-stroke"/>`);
+    parts.push(`<circle class="sel-handle rot" data-handle="rot" cx="${cx}" cy="${rotY}" r="${h / 2}" vector-effect="non-scaling-stroke"><title>Girar (Shift: de 15 em 15°)</title></circle>`);
+    for (const [name, hx, hy] of [["nw", x0, y0], ["ne", x1, y0], ["sw", x0, y1], ["se", x1, y1]]) {
+      parts.push(`<rect class="sel-handle scale ${name}" data-handle="${name}" x="${hx - h / 2}" y="${hy - h / 2}" width="${h}" height="${h}" vector-effect="non-scaling-stroke"><title>Escalar (proporção mantida)</title></rect>`);
+    }
+  }
+  svg.innerHTML = parts.join("");
+  renderPieceBox(group);
+}
+
+// --- numeric box next to the selection (precise moves, angle, scale)
+function renderPieceBox(group) {
+  const box = $("piece-box");
+  const job = state.job;
+  const keys = [...state.pieces];
+  if (state.canvasMode !== "move" || !keys.length || !job?.placements) { box.hidden = true; return; }
+  if (group === undefined) group = unionBox(keys.map((key) => instanceBox(key)));
+  const single = keys.length === 1 ? placementOf(keys[0]) : null;
+  const focused = document.activeElement?.closest?.("#piece-box") ? document.activeElement.id : null;
+  const keep = (id) => (focused === id ? $(id).value : null);
+  const dx = keep("pb-dx") ?? "", dy = keep("pb-dy") ?? "";
+  const rot = keep("pb-rot") ?? (single ? String(Math.round(single.rotation_deg * 100) / 100) : "");
+  const scale = keep("pb-scale") ?? (single ? String(Math.round(single.scale * 10000) / 100) : "");
+  const w = group ? group.x1 - group.x0 : 0, h = group ? group.y1 - group.y0 : 0;
+  const title = single ? instanceName(keys[0]) : `${keys.length} peças selecionadas`;
+  const nestSame = keys.every((key) => samePlacement(placementOf(key), placementOf(key, job.nest_placements)));
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="pb-title" title="${esc(title)}">${esc(title)}</div>
+    <div class="pb-row">
+      <span class="pb-label">Mover</span>
+      <label class="pb-field">X <input class="control" type="number" id="pb-dx" step="0.1" value="${esc(dx)}" placeholder="0" /> mm</label>
+      <label class="pb-field">Y <input class="control" type="number" id="pb-dy" step="0.1" value="${esc(dy)}" placeholder="0" /> mm</label>
+      <button class="btn sm" id="pb-apply-move" title="Desloca a seleção pela distância informada (Enter)">Aplicar</button>
+    </div>
+    <div class="pb-row">
+      <label class="pb-field">${single ? "Rotação" : "Girar mais"} <input class="control" type="number" id="pb-rot" step="1" value="${esc(rot)}" placeholder="0" /> °</label>
+      <label class="pb-field">${single ? "Escala" : "Escalar por"} <input class="control" type="number" id="pb-scale" step="1" min="10" max="1000" value="${esc(scale)}" placeholder="100" /> %</label>
+    </div>
+    <div class="pb-info">${group ? `${w.toFixed(1)} × ${h.toFixed(1)} mm · canto em X ${group.x0.toFixed(1)}, Y ${group.y0.toFixed(1)} mm` : ""}</div>
+    <div class="pb-row pb-actions">
+      <button class="btn sm ghost" id="pb-reset" ${nestSame ? "disabled" : ""} title="Volta a seleção para onde o nesting a deixou">${icon("regenerate")} Restaurar seleção</button>
+      <span class="small muted">Setas: 1 mm · Shift+setas: 10 mm</span>
+    </div>`;
+  if (focused && $(focused)) { const el = $(focused); el.focus(); el.select?.(); }
+  // Sit beside the selection's top-right corner, kept inside the viewport.
+  const vp = $("canvas-viewport");
+  const v = state.view, s = pxPerMm();
+  const px = group ? v.x + group.x1 * s + 14 : vp.clientWidth / 2;
+  const py = group ? v.y + group.y0 * s : vp.clientHeight / 2;
+  const bw = box.offsetWidth || 300, bh = box.offsetHeight || 150;
+  let left = px, top = py;
+  if (group && px + bw > vp.clientWidth - 8) {
+    const atLeft = v.x + group.x0 * s - bw - 14;
+    if (atLeft >= 8) left = atLeft;
+    else { left = v.x + group.x0 * s; top = v.y + group.y1 * s + 14; } // no room beside it: go below
+  }
+  box.style.left = `${Math.max(8, Math.min(left, vp.clientWidth - bw - 8))}px`;
+  box.style.top = `${Math.min(Math.max(8, top), Math.max(8, vp.clientHeight - bh - 8))}px`;
+}
+
+// --- editing primitives (all in mm; they only touch state.job.placements)
+function updatePlacements(mutate) {
+  const job = state.job;
+  if (!job?.placements) return;
+  job.placements = job.placements.map((p) => (state.pieces.has(placementKey(p)) ? mutate({ ...p }) : p));
+  applyInstanceTransforms();
+  commitLayout();
+}
+function nudgeSelection(dx, dy) {
+  updatePlacements((p) => ({ ...p, cx_mm: p.cx_mm + dx, cy_mm: p.cy_mm + dy }));
+}
+function rotateSelection(deltaDeg, { absolute = false } = {}) {
+  const boxes = [...state.pieces].map((key) => instanceBox(key));
+  const group = unionBox(boxes);
+  if (!group) return;
+  const gx = (group.x0 + group.x1) / 2, gy = (group.y0 + group.y1) / 2;
+  const single = state.pieces.size === 1;
+  updatePlacements((p) => {
+    const d = absolute ? deltaDeg - p.rotation_deg : deltaDeg;
+    const rad = (d * Math.PI) / 180;
+    // A single piece turns about its own center; a group turns about the
+    // group's center so the pieces keep their relative arrangement.
+    const px = single ? p.cx_mm : gx, py = single ? p.cy_mm : gy;
+    const rx = p.cx_mm - px, ry = p.cy_mm - py;
+    return {
+      ...p,
+      rotation_deg: (((p.rotation_deg + d) % 360) + 360) % 360,
+      cx_mm: px + rx * Math.cos(rad) - ry * Math.sin(rad),
+      cy_mm: py + rx * Math.sin(rad) + ry * Math.cos(rad),
+    };
+  });
+}
+function scaleSelection(factor, { absolute = false, pivot = null } = {}) {
+  const boxes = [...state.pieces].map((key) => instanceBox(key));
+  const group = unionBox(boxes);
+  if (!group) return;
+  const gx = pivot ? pivot.x : (group.x0 + group.x1) / 2, gy = pivot ? pivot.y : (group.y0 + group.y1) / 2;
+  const single = state.pieces.size === 1;
+  updatePlacements((p) => {
+    let f = absolute ? factor / p.scale : factor;
+    const target = Math.min(SCALE_MAX, Math.max(SCALE_MIN, p.scale * f));
+    f = target / p.scale;
+    const px = single && !pivot ? p.cx_mm : gx, py = single && !pivot ? p.cy_mm : gy;
+    return { ...p, scale: target, cx_mm: px + (p.cx_mm - px) * f, cy_mm: py + (p.cy_mm - py) * f };
+  });
+}
+function resetSelectionLayout() {
+  const job = state.job;
+  updatePlacements((p) => ({ ...placementOf(placementKey(p), job.nest_placements) }));
+}
+function commitLayout() {
+  // Store right away (a reload must not lose the work); the server keeps
+  // operations/assignments and re-renders the preview in the background.
+  clearTimeout(state.layoutTimer);
+  const job = state.job;
+  if (!job?.placements) return;
+  state.layoutDirty = true;
+  renderLayoutBadges();
+  renderParts();
+  state.layoutTimer = setTimeout(async () => {
+    const payload = job.placements.map((p) => ({ part_id: p.part_id, instance_index: p.instance_index, cx_mm: p.cx_mm, cy_mm: p.cy_mm, rotation_deg: p.rotation_deg, scale: p.scale }));
+    try {
+      const saved = await api(`/api/jobs/${job.id}/layout`, { method: "PUT", json: { placements: payload } });
+      if (state.job?.id !== job.id) return;
+      state.layoutDirty = false;
+      // Keep our placements (identical to what was sent); take everything else.
+      state.job = { ...saved, placements: job.placements };
+      renderJobBar(); renderResult(); renderLayoutBadges();
+      schedulePoll();
+    } catch (e) { toast(`Não foi possível salvar o layout: ${e.message}`); }
+  }, 300);
+}
+async function resetLayout() {
+  const job = state.job;
+  if (!job || !hasManualLayout(job)) return;
+  if (!confirm("Restaurar todas as peças para as posições do nesting? Os ajustes manuais de posição, rotação e escala serão perdidos.")) return;
+  try {
+    clearTimeout(state.layoutTimer);
+    state.layoutDirty = false;
+    state.job = await api(`/api/jobs/${job.id}/layout/reset`, { method: "POST" });
+    applyInstanceTransforms();
+    renderAll();
+    schedulePoll();
+    toast("Layout do nesting restaurado.");
+  } catch (e) { toast(`Não foi possível restaurar: ${e.message}`); }
+}
+
+// --- mode + selection
+function setCanvasMode(mode) {
+  if (state.canvasMode === mode) return;
+  state.canvasMode = mode;
+  state.selected.clear();
+  state.pieces.clear();
+  renderCanvasMode();
+  styleShapeElements();
+  renderColorBar();
+  applyInstanceTransforms();
+}
+function renderCanvasMode() {
+  const move = state.canvasMode === "move";
+  $("nav-mode-select").classList.toggle("active", !move);
+  $("nav-mode-move").classList.toggle("active", move);
+  $("canvas-viewport").classList.toggle("mode-move", move);
+  $("nav-reset-layout").disabled = !hasManualLayout(state.job);
+  $("nav-reset-layout").hidden = !move;
+}
+function selectPieces(keys, { add = false } = {}) {
+  if (!add) state.pieces.clear();
+  for (const key of keys) state.pieces.add(key);
+  applyInstanceTransforms();
+}
+function togglePiece(key) {
+  if (state.pieces.has(key)) state.pieces.delete(key); else state.pieces.add(key);
+  applyInstanceTransforms();
+}
+function pieceKeyFromEvent(e) {
+  const outer = e.target.closest?.(".svc-inst");
+  return outer?.dataset.inst || null;
+}
+function viewportPoint(e) {
+  const rect = $("canvas-viewport").getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+function toMm(pt) {
+  const s = pxPerMm();
+  return { x: (pt.x - state.view.x) / s, y: (pt.y - state.view.y) / s };
+}
+
+// --- gestures: move (drag body), rotate (top handle), scale (corners), marquee
+function beginGesture(kind, e, extra = {}) {
+  const start = toMm(viewportPoint(e));
+  const startPlacements = new Map([...state.pieces].map((key) => [key, { ...placementOf(key) }]));
+  const group = unionBox([...state.pieces].map((key) => instanceBox(key)));
+  state.drag = { kind, start, startPlacements, group, moved: false, clientX: e.clientX, clientY: e.clientY, ...extra };
+  $("canvas-viewport").classList.add("dragging");
+}
+function updateGesture(e) {
+  const d = state.drag;
+  const cur = toMm(viewportPoint(e));
+  const override = new Map();
+  if (d.kind === "move") {
+    let dx = cur.x - d.start.x, dy = cur.y - d.start.y;
+    if (!e.altKey) { dx = Math.round(dx / MOVE_SNAP_MM) * MOVE_SNAP_MM; dy = Math.round(dy / MOVE_SNAP_MM) * MOVE_SNAP_MM; }
+    for (const [key, p] of d.startPlacements) override.set(key, { ...p, cx_mm: p.cx_mm + dx, cy_mm: p.cy_mm + dy });
+    d.last = { dx, dy };
+  } else if (d.kind === "rotate") {
+    const g = d.group, gx = (g.x0 + g.x1) / 2, gy = (g.y0 + g.y1) / 2;
+    let deg = ((Math.atan2(cur.y - gy, cur.x - gx) - Math.atan2(d.start.y - gy, d.start.x - gx)) * 180) / Math.PI;
+    deg = e.shiftKey ? Math.round(deg / ROTATE_SNAP_DEG) * ROTATE_SNAP_DEG : Math.round(deg);
+    const rad = (deg * Math.PI) / 180;
+    const single = d.startPlacements.size === 1;
+    for (const [key, p] of d.startPlacements) {
+      const px = single ? p.cx_mm : gx, py = single ? p.cy_mm : gy;
+      const rx = p.cx_mm - px, ry = p.cy_mm - py;
+      override.set(key, { ...p, rotation_deg: (((p.rotation_deg + deg) % 360) + 360) % 360, cx_mm: px + rx * Math.cos(rad) - ry * Math.sin(rad), cy_mm: py + rx * Math.sin(rad) + ry * Math.cos(rad) });
+    }
+    d.last = { deg };
+  } else if (d.kind === "scale") {
+    // Uniform: the factor is how far the pointer went along the frame's
+    // diagonal, measured from the corner opposite the handle.
+    const g = d.group;
+    const pivot = { x: d.handle.includes("w") ? g.x1 : g.x0, y: d.handle.includes("n") ? g.y1 : g.y0 };
+    const d0 = Math.hypot(d.start.x - pivot.x, d.start.y - pivot.y) || 1;
+    const d1 = Math.hypot(cur.x - pivot.x, cur.y - pivot.y);
+    let f = Math.round((d1 / d0) * 100) / 100;
+    for (const [key, p] of d.startPlacements) {
+      const target = Math.min(SCALE_MAX, Math.max(SCALE_MIN, p.scale * f));
+      const ff = target / p.scale;
+      override.set(key, { ...p, scale: target, cx_mm: pivot.x + (p.cx_mm - pivot.x) * ff, cy_mm: pivot.y + (p.cy_mm - pivot.y) * ff });
+    }
+    d.last = { f, pivot };
+  } else if (d.kind === "marquee") {
+    const a = viewportPoint(e), b = d.startPx;
+    const m = $("marquee");
+    m.hidden = false;
+    m.style.left = `${Math.min(a.x, b.x)}px`; m.style.top = `${Math.min(a.y, b.y)}px`;
+    m.style.width = `${Math.abs(a.x - b.x)}px`; m.style.height = `${Math.abs(a.y - b.y)}px`;
+    return;
+  }
+  d.override = override;
+  applyInstanceTransforms(override);
+}
+function endGesture(e) {
+  const d = state.drag;
+  state.drag = null;
+  $("canvas-viewport").classList.remove("dragging");
+  $("marquee").hidden = true;
+  if (d.kind === "marquee") {
+    if (!d.moved) return;
+    const a = toMm(viewportPoint(e)), b = d.start;
+    const r = { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+    const hit = allInstanceKeys().filter((key) => { const bx = instanceBox(key); return bx && bx.x0 < r.x1 && r.x0 < bx.x1 && bx.y0 < r.y1 && r.y0 < bx.y1; });
+    selectPieces(hit, { add: e.shiftKey });
+    return;
+  }
+  if (!d.moved || !d.override) { applyInstanceTransforms(); return; }
+  state.job.placements = state.job.placements.map((p) => d.override.get(placementKey(p)) || p);
+  applyInstanceTransforms();
+  commitLayout();
 }
 
 // ---------------------------------------------------------------------------
@@ -811,7 +1281,7 @@ function renderResult() {
     </div>
     <p class="small muted" style="margin-top:8px">Arquivo: ${esc(job.name)} → <strong>.rd</strong> (${Math.round((job.artifacts?.rd_bytes || 0) / 1024)} KB) · magic 0x${(profile()?.magic || 136).toString(16).toUpperCase()}</p>`;
 }
-const BUSY_LABEL = { analyzing_parts: "Analisando peça(s)…", nesting: "Posicionando peças…", generating: "Gerando o arquivo da máquina…" };
+const BUSY_LABEL = { analyzing_parts: "Analisando peça(s)…", nesting: "Posicionando peças…", relayout: "Atualizando a pré-visualização…", generating: "Gerando o arquivo da máquina…" };
 
 function renderJobBar() {
   const job = state.job;
@@ -866,6 +1336,9 @@ async function openJob(id) {
   state.job = await api(`/api/jobs/${id}`);
   state.expanded.clear();
   state.selected.clear();
+  state.pieces.clear();
+  state.layoutDirty = false;
+  state.canvasMode = "select";
   state.confirmCritical = false;
   state.showPath = false;
   state.step = state.job.status === "ready" ? 3 : state.job.analysis ? 2 : 1;
@@ -878,16 +1351,24 @@ function schedulePoll() {
   const job = state.job;
   if (!job || !BUSY_STATUSES.has(job.status)) return;
   state.pollTimer = setTimeout(async () => {
+    if (state.drag) return schedulePoll(); // never swap the SVG under a drag
     try {
       const fresh = await api(`/api/jobs/${job.id}`);
       const wasBusy = job.status;
+      // Layout edits not stored yet win over whatever the server has.
+      if (state.layoutDirty && state.job?.placements) fresh.placements = state.job.placements;
       state.job = fresh;
       if (fresh.status !== wasBusy) {
         await loadJobs();
         if (fresh.status === "parts_ready" && wasBusy === "analyzing_parts") toast("Peça(s) analisada(s). Ajuste a quantidade e aperte Nestear.");
-        if (fresh.status === "ready_for_params") { state.step = 2; state.selected.clear(); toast("Peças posicionadas. Revise as operações."); }
-        if (fresh.status === "ready") { state.step = 3; state.showPath = true; toast("Arquivo .rd pronto para download."); }
-        if (fresh.status === "failed") toast(`Falha: ${fresh.error?.message || "erro desconhecido"}`);
+        if (wasBusy === "relayout") {
+          // Preview refreshed after a manual layout edit: stay where the user is.
+          if (fresh.status === "failed") toast(`Falha ao atualizar a pré-visualização: ${fresh.error?.message || "erro desconhecido"}`);
+        } else {
+          if (fresh.status === "ready_for_params") { state.step = 2; state.selected.clear(); state.canvasMode = "select"; toast("Peças posicionadas. Revise as operações — ou use \"Mover peças\" para ajustar o layout."); }
+          if (fresh.status === "ready") { state.step = 3; state.showPath = true; toast("Arquivo .rd pronto para download."); }
+          if (fresh.status === "failed") toast(`Falha: ${fresh.error?.message || "erro desconhecido"}`);
+        }
       }
       renderAll();
     } catch (e) { toast(e.message); }
@@ -941,6 +1422,7 @@ async function removePart(partId) {
 async function patchPart(partId, patch) {
   const job = state.job;
   if (!job) return;
+  if (!confirmDiscardLayout(job, "Alterar a peça")) { renderParts(); return; }
   try {
     state.job = await api(`/api/jobs/${job.id}/parts/${partId}`, { method: "PUT", json: patch });
     state.selected.clear();
@@ -965,6 +1447,7 @@ async function changeJobProfile(profileId, { force = false } = {}) {
     renderProfiles();
     return;
   }
+  if (!confirmDiscardLayout(job, `Trocar para "${target.name}"`)) { renderProfiles(); return; }
   try {
     state.job = await api(`/api/jobs/${job.id}/profile`, { method: "PUT", json: { profile_id: profileId, force } });
     state.selected.clear();
@@ -975,9 +1458,16 @@ async function changeJobProfile(profileId, { force = false } = {}) {
     if (state.job.status === "parts_ready") toast(`Máquina: ${target.name}. Aperte "Nestear peças" para posicionar na nova mesa.`);
   } catch (e) { toast(`Não foi possível trocar a máquina: ${e.message}`); renderProfiles(); }
 }
+function confirmDiscardLayout(job, what) {
+  // Re-nesting (or anything that resets the layout) throws away positions,
+  // rotations and scales set by hand - say so before doing it.
+  if (!hasManualLayout(job)) return true;
+  return confirm(`${what} refaz o nesting e descarta as posições, rotações e escalas ajustadas à mão no canvas. Continuar?`);
+}
 async function runNest() {
   const job = state.job;
   if (!job) return;
+  if (!confirmDiscardLayout(job, "Nestear novamente")) return;
   try {
     state.job = await api(`/api/jobs/${job.id}/nest`, { method: "POST" });
     state.selected.clear();
@@ -1047,6 +1537,8 @@ function bind() {
   $("theme-toggle").innerHTML = icon("theme");
   $("nav-fit").innerHTML = icon("fit"); $("nav-fit-parts").innerHTML = icon("fitParts"); $("nav-zoom-in").innerHTML = icon("zoomIn"); $("nav-zoom-out").innerHTML = icon("zoomOut");
   $("nav-grid").innerHTML = icon("grid"); $("nav-path").innerHTML = icon("travel"); $("nav-travel").innerHTML = icon("distance");
+  $("nav-mode-select").innerHTML = `${icon("pointer")}<span>Selecionar</span>`; $("nav-mode-move").innerHTML = `${icon("move")}<span>Mover peças</span>`;
+  $("nav-reset-layout").innerHTML = icon("regenerate");
   $("origin-marker").innerHTML = icon("origin");
   $("opt-chev").innerHTML = icon("chevron", "icon chev");
   $("m-advanced-chev").innerHTML = icon("chevron", "icon chev");
@@ -1063,6 +1555,8 @@ function bind() {
       state.panelFolded = state.step === n ? !state.panelFolded : false;
       state.step = n;
       renderSteps();
+      // Step 1 is where the layout lives, step 2 is where colors are assigned.
+      if (state.job?.analysis && !state.panelFolded) setCanvasMode(n === 1 ? "move" : "select");
       return;
     }
     if (e.target.closest("[data-toggle-history]")) { state.historyOpen = !$("panel-history").classList.contains("open"); renderHistoryPanel(); }
@@ -1216,10 +1710,39 @@ function bind() {
     zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - rect.left, e.clientY - rect.top);
   }, { passive: false });
   viewport.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || !state.job?.analysis || e.target.closest("button, .canvas-nav, .canvas-badges")) return;
-    state.pan = { sx: e.clientX, sy: e.clientY, vx: state.view.x, vy: state.view.y, moved: false };
+    if (!state.job?.analysis || e.target.closest("button, .canvas-nav, .canvas-badges, .layout-badges, #piece-box")) return;
+    const startPan = () => { state.pan = { sx: e.clientX, sy: e.clientY, vx: state.view.x, vy: state.view.y, moved: false }; };
+    // Middle button (or Space held) always pans, whatever the mode.
+    if (e.button === 1 || (e.button === 0 && state.spaceHeld)) { e.preventDefault(); return startPan(); }
+    if (e.button !== 0) return;
+    if (state.canvasMode !== "move" || BUSY_STATUSES.has(state.job.status) && state.job.status !== "relayout") return startPan();
+    const handle = e.target.closest?.("[data-handle]");
+    if (handle && state.pieces.size) {
+      e.preventDefault();
+      const name = handle.dataset.handle;
+      return beginGesture(name === "rot" ? "rotate" : "scale", e, { handle: name });
+    }
+    const key = pieceKeyFromEvent(e);
+    if (key) {
+      e.preventDefault();
+      if (e.shiftKey) { togglePiece(key); if (!state.pieces.has(key)) return; }
+      else if (!state.pieces.has(key)) selectPieces([key]);
+      return beginGesture("move", e);
+    }
+    // Empty bed: rubber-band selection.
+    e.preventDefault();
+    beginGesture("marquee", e, { startPx: viewportPoint(e) });
   });
   window.addEventListener("pointermove", (e) => {
+    const d = state.drag;
+    if (d) {
+      if (!d.moved) {
+        if (Math.hypot(e.clientX - d.clientX, e.clientY - d.clientY) < 3) return;
+        d.moved = true;
+      }
+      updateGesture(e);
+      return;
+    }
     const pan = state.pan;
     if (!pan) return;
     const dx = e.clientX - pan.sx, dy = e.clientY - pan.sy;
@@ -1230,6 +1753,13 @@ function bind() {
     applyView();
   });
   window.addEventListener("pointerup", (e) => {
+    if (state.drag) {
+      const d = state.drag;
+      endGesture(e);
+      // A plain click on the empty bed (no drag) clears the piece selection.
+      if (d.kind === "marquee" && !d.moved && !e.shiftKey) clearSelection();
+      return;
+    }
     const pan = state.pan;
     if (!pan) return;
     state.pan = null;
@@ -1238,6 +1768,38 @@ function bind() {
     // A plain click on the bed background (not on a shape) clears the selection.
     if (!pan.moved && viewport.contains(e.target) && !shapeIdFromEvent(e) && !e.target.closest("button")) clearSelection();
   });
+  $("nav-mode-select").onclick = () => setCanvasMode("select");
+  $("nav-mode-move").onclick = () => setCanvasMode("move");
+  $("nav-reset-layout").onclick = resetLayout;
+  $("piece-box").addEventListener("click", (e) => {
+    if (e.target.closest("#pb-apply-move")) return applyMoveBox();
+    if (e.target.closest("#pb-reset")) return resetSelectionLayout();
+  });
+  $("piece-box").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (e.target.id === "pb-dx" || e.target.id === "pb-dy") applyMoveBox();
+    else e.target.blur();
+  });
+  $("piece-box").addEventListener("change", (e) => {
+    if (e.target.id === "pb-rot") {
+      const v = Number(e.target.value);
+      if (!Number.isFinite(v)) return;
+      rotateSelection(v, { absolute: state.pieces.size === 1 });
+    }
+    if (e.target.id === "pb-scale") {
+      const v = Number(e.target.value) / 100;
+      if (!Number.isFinite(v) || v <= 0) return;
+      scaleSelection(v, { absolute: state.pieces.size === 1 });
+    }
+  });
+  function applyMoveBox() {
+    const dx = Number($("pb-dx").value) || 0, dy = Number($("pb-dy").value) || 0;
+    if (!dx && !dy) return;
+    nudgeSelection(dx, dy);
+    $("pb-dx").value = ""; $("pb-dy").value = "";
+    $("pb-dx").focus();
+  }
   $("nav-grid").onclick = () => { state.showGrid = !state.showGrid; renderCanvas(); };
   $("nav-path").onclick = () => { state.showPath = !state.showPath; renderCanvas(); renderResult(); };
   $("nav-travel").onclick = () => { state.showTravel = !state.showTravel; renderCanvas(); };
@@ -1280,6 +1842,7 @@ function bind() {
   $("btn-clear-selection").onclick = clearSelection;
   $("layer-preview").addEventListener("click", (e) => {
     if (state.suppressClick) { state.suppressClick = false; return; }
+    if (state.canvasMode === "move") return; // pieces are picked on pointerdown
     const id = shapeIdFromEvent(e);
     if (!id || !selectableIds().includes(id)) return;
     if (!e.shiftKey) state.selected.clear();
@@ -1291,9 +1854,26 @@ function bind() {
   $("layer-preview").addEventListener("pointerover", (e) => setHover(shapeIdFromEvent(e), true));
   $("layer-preview").addEventListener("pointerout", (e) => setHover(shapeIdFromEvent(e), false));
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") clearSelection();
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && state.job?.analysis && !e.target.closest("input, textarea, select")) { e.preventDefault(); selectAll(); }
+    const typing = !!e.target.closest("input, textarea, select");
+    if (e.key === "Escape") { if (typing) e.target.blur(); else clearSelection(); }
+    if (typing || !state.job?.analysis) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      if (state.canvasMode === "move") selectPieces(allInstanceKeys()); else selectAll();
+      return;
+    }
+    if (e.key === " " && !e.repeat) { state.spaceHeld = true; e.preventDefault(); return; }
+    if (e.key.toLowerCase() === "v" && !e.ctrlKey && !e.metaKey) return setCanvasMode("select");
+    if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) return setCanvasMode("move");
+    if (state.canvasMode === "move" && state.pieces.size && e.key.startsWith("Arrow")) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+      const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+      nudgeSelection(dx, dy);
+    }
   });
+  document.addEventListener("keyup", (e) => { if (e.key === " ") state.spaceHeld = false; });
 }
 
 // ---------------------------------------------------------------------------

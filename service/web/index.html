@@ -21,11 +21,21 @@
           <div class="bed-grid" id="bed-grid"></div>
           <div class="layer preview" id="layer-preview"></div>
           <div class="layer path" id="layer-path" data-travel="on"></div>
+          <svg class="layer select" id="layer-select" preserveAspectRatio="none" aria-hidden="true"></svg>
           <div class="bed-label" id="bed-label"></div>
           <span class="origin-marker" id="origin-marker" title="Origem da máquina"></span>
         </div>
         <div class="canvas-badges" id="canvas-badges"></div>
+        <div class="canvas-badges layout-badges" id="layout-badges" aria-live="polite"></div>
+        <div class="marquee" id="marquee" hidden></div>
+        <div class="piece-box" id="piece-box" hidden></div>
         <div class="canvas-nav" id="canvas-nav" hidden>
+          <div class="segmented sm" role="group" aria-label="Modo do canvas">
+            <button class="seg-btn" id="nav-mode-select" title="Selecionar formas para atribuir cores/operações (V)"></button>
+            <button class="seg-btn" id="nav-mode-move" title="Mover, girar e escalar peças na mesa (M)"></button>
+          </div>
+          <button class="btn ghost icon-only" id="nav-reset-layout" title="Restaurar as posições do nesting" hidden></button>
+          <span class="canvas-nav-sep"></span>
           <button class="btn ghost icon-only" id="nav-fit" title="Ver a mesa inteira"></button>
           <button class="btn ghost icon-only" id="nav-fit-parts" title="Aproximar das peças"></button>
           <button class="btn ghost icon-only" id="nav-zoom-in" title="Aproximar (roda do mouse)"></button>

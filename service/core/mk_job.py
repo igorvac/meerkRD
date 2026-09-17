@@ -187,11 +187,28 @@ def leaves_bounds(leaves):
     )
 
 
+def placement_transform(placement):
+    """Rotation (degrees) and uniform scale a placement asks for. Layouts
+    written before manual editing existed only carry the nesting's 90-degree
+    flag, so that stays the fallback."""
+    angle = placement.get("rotation_deg")
+    if angle is None:
+        angle = 90.0 if placement.get("rotated") else 0.0
+    scale = placement.get("scale")
+    if scale is None:
+        scale = 1.0
+    return float(angle), float(scale)
+
+
 def position_part_instance(elements, file_node, placement):
     """
-    placement: {"x_mm": .., "y_mm": .., "rotated": bool} - x/y are the target
-    top-left corner of the instance's bounding box, in mm, in the document's
-    native (pre-device-transform) coordinate space.
+    placement: {"cx_mm", "cy_mm", "rotation_deg", "scale"} - the instance is
+    scaled and rotated about the center of its own bounding box (which that
+    center is invariant to), then that center is moved to (cx_mm, cy_mm), in
+    mm, in the document's native (pre-device-transform) coordinate space.
+    The web canvas mirrors exactly this sequence, so what it shows is what
+    the machine gets. Older layouts without a center anchor the bounding
+    box's top-left corner at (x_mm, y_mm) instead.
     """
     leaves = list(leaf_elements_under(file_node))
     if not leaves:
@@ -199,18 +216,23 @@ def position_part_instance(elements, file_node, placement):
     bounds = leaves_bounds(leaves)
     if bounds is None:
         return
-    if placement.get("rotated"):
-        min_x, min_y, max_x, max_y = bounds
-        cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+    angle, scale = placement_transform(placement)
+    min_x, min_y, max_x, max_y = bounds
+    cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+    if abs(scale - 1.0) > 1e-9 or abs(angle) > 1e-9:
         for leaf in leaves:
-            leaf.matrix.post_rotate(math.pi / 2, cx, cy)
+            if abs(scale - 1.0) > 1e-9:
+                leaf.matrix.post_scale(scale, scale, cx, cy)
+            if abs(angle) > 1e-9:
+                leaf.matrix.post_rotate(math.radians(angle), cx, cy)
             leaf.modified()
+    if placement.get("cx_mm") is not None and placement.get("cy_mm") is not None:
+        dx = float(placement["cx_mm"]) * UNITS_PER_MM - cx
+        dy = float(placement["cy_mm"]) * UNITS_PER_MM - cy
+    else:
         bounds = leaves_bounds(leaves)
-    min_x, min_y, _, _ = bounds
-    target_x = float(placement["x_mm"]) * UNITS_PER_MM
-    target_y = float(placement["y_mm"]) * UNITS_PER_MM
-    dx = target_x - min_x
-    dy = target_y - min_y
+        dx = float(placement["x_mm"]) * UNITS_PER_MM - bounds[0]
+        dy = float(placement["y_mm"]) * UNITS_PER_MM - bounds[1]
     if abs(dx) > 1e-6 or abs(dy) > 1e-6:
         elements.translate_node(file_node, dx, dy)
 
@@ -218,7 +240,8 @@ def position_part_instance(elements, file_node, placement):
 def load_all_parts(kernel, job_dir, parts, placements=None):
     """
     parts: [{"id":..., "file": "relative/path.dxf"}]
-    placements: optional [{"part_id":..., "instance_index":..., "x_mm":..., "y_mm":..., "rotated":...}]
+    placements: optional [{"part_id":..., "instance_index":..., "cx_mm":..., "cy_mm":...,
+                           "rotation_deg":..., "scale":...}] (see position_part_instance)
                 one entry per instance to load; if omitted, each part is
                 loaded exactly once, unplaced (used for the lightweight
                 per-part analysis before nesting has run).
@@ -331,6 +354,16 @@ def union_bbox(infos):
     ]
 
 
+def instance_bboxes(infos):
+    """Bounding box of every loaded copy, keyed "<part>#<copy>" - what the
+    service writes back into placements after a manual layout edit."""
+    groups = {}
+    for info in infos:
+        key = str(info["id"]).rsplit(":", 1)[0]
+        groups.setdefault(key, []).append(info)
+    return {key: union_bbox(group) for key, group in groups.items() if union_bbox(group)}
+
+
 # --------------------------------------------------------------------------- actions
 def analyze_part(kernel, job_dir, request):
     """Lightweight, single-part analysis used right after a file is uploaded:
@@ -376,6 +409,7 @@ def analyze_nested(kernel, job_dir, request):
         "operations": operations,
         "assignments": assignments,
         "bbox_mm": bbox,
+        "instances": instance_bboxes(infos),
         "bed_mm": bed,
         "outside_bed": bool(
             bbox

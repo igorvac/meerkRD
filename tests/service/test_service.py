@@ -273,3 +273,102 @@ def test_changing_the_machine_keeps_parts_and_resets_the_layout(client):
     # Same id without force is a no-op; with force it re-nests (profile edited).
     assert client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "ruida-small"}).json()["status"] == "ready_for_params"
     assert client.put(f"/api/jobs/{job_id}/profile", json={"profile_id": "ruida-small", "force": True}).json()["status"] == "parts_ready"
+
+
+def nest_and_wait(client, files):
+    res = upload(client, files)
+    job_id = res.json()["id"]
+    wait_status(client, job_id, {"parts_ready"})
+    client.post(f"/api/jobs/{job_id}/nest")
+    return wait_status(client, job_id, {"ready_for_params"})
+
+
+def wait_layout(client, job_id):
+    job = wait_status(client, job_id, {"ready_for_params", "ready", "failed"})
+    assert job["status"] != "failed", job.get("error")
+    assert layout_key(job["placements"]) == layout_key(job["rendered_placements"])
+    return job
+
+
+def layout_key(placements):
+    return [(p["part_id"], p["instance_index"], round(p["cx_mm"], 3), round(p["cy_mm"], 3), p["rotation_deg"], p["scale"]) for p in placements]
+
+
+def test_layout_edit_keeps_assignments_and_redraws_the_preview(client):
+    job = nest_and_wait(client, [("a.dxf", EXAMPLE), ("b.dxf", EXAMPLE)])
+    job_id = job["id"]
+    assert layout_key(job["nest_placements"]) == layout_key(job["placements"]) == layout_key(job["rendered_placements"])
+    # Move a shape to another operation by hand, so we can see it survive.
+    params = job["params"]
+    moved_id = next(eid for eid, op in params["assignments"].items() if op == "op_1")
+    params["assignments"][moved_id] = "op_2"
+    client.put(f"/api/jobs/{job_id}/params", json=params)
+
+    placements = [
+        {k: p[k] for k in ("part_id", "instance_index", "cx_mm", "cy_mm", "rotation_deg", "scale")}
+        for p in job["placements"]
+    ]
+    placements[1].update({"cx_mm": 400, "cy_mm": 300, "rotation_deg": 30, "scale": 0.5})
+    res = client.put(f"/api/jobs/{job_id}/layout", json={"placements": placements})
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "relayout"
+    job = wait_layout(client, job_id)
+    assert job["params"]["assignments"][moved_id] == "op_2"
+    assert {e["id"] for e in job["analysis"]["elements"]} == set(job["params"]["assignments"])
+    moved = job["placements"][1]
+    assert moved["rotation_deg"] == 30 and moved["scale"] == 0.5
+    # The engine measured the rotated box and wrote it back.
+    import math
+
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    assert moved["width_mm"] == pytest.approx(60 * c + 40 * s, abs=0.05)
+    assert moved["height_mm"] == pytest.approx(60 * s + 40 * c, abs=0.05)
+    assert moved["x_mm"] == pytest.approx(400 - moved["width_mm"] / 2, abs=0.05)
+    assert job["nest_placements"][1]["cx_mm"] != 400  # the nesting itself is untouched
+
+    # Reset puts everything back and re-renders again.
+    res = client.post(f"/api/jobs/{job_id}/layout/reset")
+    assert res.status_code == 200, res.text
+    job = wait_layout(client, job_id)
+    assert [(p["cx_mm"], p["cy_mm"], p["rotation_deg"], p["scale"]) for p in job["placements"]] == [
+        (p["cx_mm"], p["cy_mm"], p["rotation_deg"], p["scale"]) for p in job["nest_placements"]
+    ]
+    assert job["params"]["assignments"][moved_id] == "op_2"
+
+
+def test_layout_rejects_a_different_set_of_copies_and_marks_generated_jobs_stale(client):
+    job = nest_and_wait(client, [("a.dxf", EXAMPLE)])
+    job_id = job["id"]
+    base = {k: job["placements"][0][k] for k in ("part_id", "instance_index", "cx_mm", "cy_mm", "rotation_deg", "scale")}
+    res = client.put(f"/api/jobs/{job_id}/layout", json={"placements": [base, {**base, "instance_index": 2}]})
+    assert res.status_code == 400
+    res = client.put(f"/api/jobs/{job_id}/layout", json={"placements": [{**base, "scale": 50}]})
+    assert res.status_code == 422
+
+    client.put(f"/api/jobs/{job_id}/params", json=job["params"])
+    client.post(f"/api/jobs/{job_id}/generate")
+    wait_status(client, job_id, {"ready"})
+    res = client.put(f"/api/jobs/{job_id}/layout", json={"placements": [{**base, "cx_mm": base["cx_mm"] + 50}]})
+    assert res.status_code == 200, res.text
+    job = wait_layout(client, job_id)
+    assert job["status"] == "ready" and job["stale"] is True
+
+
+def test_legacy_placements_are_normalized_on_read(client):
+    job = nest_and_wait(client, [("a.dxf", EXAMPLE)])
+    job_id = job["id"]
+    import service.api.main as main
+
+    path = main.JOBS_DIR / job_id / "job.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for p in raw["placements"]:
+        for k in ("cx_mm", "cy_mm", "rotation_deg", "scale"):
+            p.pop(k, None)
+    raw.pop("nest_placements")
+    raw.pop("rendered_placements")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    job = client.get(f"/api/jobs/{job_id}").json()
+    p = job["placements"][0]
+    assert p["cx_mm"] == pytest.approx(p["x_mm"] + p["width_mm"] / 2)
+    assert p["rotation_deg"] == 0 and p["scale"] == 1
+    assert layout_key(job["nest_placements"]) == layout_key(job["placements"]) == layout_key(job["rendered_placements"])

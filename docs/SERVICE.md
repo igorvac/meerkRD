@@ -79,6 +79,29 @@ Variáveis de ambiente:
    com traço largo (`.svc-hit`) para o clique não exigir mira; o canvas tem
    zoom (roda do mouse / botões) e pan (arrastar), e aproxima das peças
    automaticamente ao abrir um layout.
+   **Layout manual.** Com o layout na tela, o alternador "Mover peças" (tecla
+   `M`; "Selecionar" / `V` volta ao modo de cores) deixa arrastar cópias
+   inteiras, girá-las pela alça superior (Shift = de 15 em 15°) e escalá-las
+   pelos cantos (sempre proporcional). Clique numa cópia para selecioná-la,
+   Shift+clique ou arrastar na mesa vazia (marquee) para várias; setas movem
+   1 mm (Shift: 10 mm); botão do meio ou Espaço+arrastar faz pan. Ao lado da
+   seleção aparece uma caixa com **deslocamento em X/Y** (relativo, Enter
+   aplica), rotação e escala (absolutas para uma peça, relativas para várias)
+   e o tamanho resultante em mm. Cada edição vai para
+   `PUT /api/jobs/{id}/layout` (`placements[]` com `part_id`,
+   `instance_index`, `cx_mm`, `cy_mm`, `rotation_deg`, `scale` — o conjunto de
+   cópias precisa ser o mesmo do nesting) e dispara o status **`relayout`**:
+   `analyze_nested` roda de novo só para redesenhar o `preview.svg` e medir as
+   caixas; como os ids de elemento dependem só da ordem de carregamento,
+   `params`/`assignments` são preservados. Enquanto isso o canvas mostra a
+   transformação localmente (delta entre `placements` e
+   `rendered_placements`, os placements da última análise). O canvas também
+   avisa peça fora da mesa, sobreposição (por retângulo delimitador) e escala
+   alterada. `POST /api/jobs/{id}/layout/reset` volta ao `nest_placements`
+   (a saída intacta do nesting); nestear de novo, mudar quantidade ou máquina
+   descarta o layout manual com confirmação. Um job já gerado fica `stale`.
+   **Escala altera o tamanho real de corte** — a interface mostra as medidas,
+   mas confira antes de cortar.
 5. `POST /api/jobs/{id}/generate` → `action=generate`: recarrega as mesmas
    instâncias na mesma ordem (ids batem com os de `analyze_nested`), aplica
    `assignments` diretamente (sem recombinar por layer/cor), planeja, grava
@@ -119,6 +142,24 @@ perfil, peça que não coube no nesting) exigem confirmação explícita para ba
 operação veio por padrão — quem manda em quem-corta-o-quê é `assignments`.
 `power_pct` é 0–100 (internamente 0–1000). Tipos: `cut | engrave | raster | image`.
 
+## Contrato de placement
+
+```json
+{"part_id": "bracket", "instance_index": 2,
+ "cx_mm": 200.0, "cy_mm": 80.0, "rotation_deg": 37.0, "scale": 0.5,
+ "x_mm": 164.0, "y_mm": 46.0, "width_mm": 72.0, "height_mm": 68.1, "rotated": false}
+```
+
+O motor (`mk_job.py:position_part_instance`) escala e gira cada cópia em torno
+do centro do seu próprio retângulo delimitador (que é invariante às duas
+operações) e leva esse centro a `(cx_mm, cy_mm)`; `x/y/width/height` são a
+caixa medida depois da transformação, só informativos, e `rotated` é o flag
+0°/90° do nesting. Layouts gravados antes desse contrato (só `x_mm/y_mm` e
+`rotated`) são normalizados na leitura — para caixas a 0°/90° as duas formas
+são idênticas. O job guarda três listas: `placements` (o que vale),
+`nest_placements` (saída do nesting, base do reset) e `rendered_placements`
+(o que o `preview.svg` atual mostra).
+
 ## Perfis de máquina
 
 `seed/machine_profiles.json` → copiado para `RD_DATA_DIR/machine_profiles.json` no
@@ -137,7 +178,9 @@ DXF); `tests/service` cobre o serviço.
 
 Cobrem: o algoritmo de nesting isolado (sem overlap, sem estourar a mesa, rotação,
 peça que não cabe), o núcleo multi-peça (`analyze_part`/`analyze_nested`/`generate`
-com múltiplas cópias posicionadas sem sobreposição, agregação de layer entre peças),
+com múltiplas cópias posicionadas sem sobreposição, agregação de layer entre peças,
+rotação livre e escala por centro, placement legado), o layout manual pela API
+(preserva atribuições, rejeita conjunto de cópias diferente, reset, `stale`),
 geração de `.rd` válido (magic, EOF, velocidades por camada decodificadas do
 arquivo), raster headless, avisos, e o fluxo HTTP completo (upload multi-arquivo →
 nest → reatribuir elemento a outra operação → generate → download → stale →
@@ -158,6 +201,13 @@ adicionar peça invalida o job → duplicar → excluir).
   primeiro alvo de otimização.
 - **Pontos de referência** (`elem point` no DXF) aparecem no desenho mas não são
   selecionáveis nem contam para nenhuma operação: o MeerK40t não os corta.
+- **Layout manual não foi testado em máquina real.** Rotação livre e escala
+  passaram pelo motor (a caixa medida bate com a geometria esperada) e pelo
+  navegador, mas um `.rd` com peças giradas em ângulos arbitrários — sobretudo em
+  modo âncora, cujo header usa o canto mínimo da geometria — ainda precisa de
+  comparação com o RDWorks e de um corte de teste. A detecção de sobreposição é
+  por retângulo delimitador, não por contorno. Escalar peças com imagem raster
+  (`elem image`) não foi verificado.
 - O `.rd` é estruturalmente válido e decodificável pelo próprio loader do MeerK40t,
   e já foi comparado byte a byte com um `.rd` real do RDWorks — mas **ainda não foi
   testado numa Ruida física** (Sprint 7 do plano).

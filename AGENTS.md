@@ -62,6 +62,8 @@ POST /api/jobs (files[], profile_id)
   -> parts_ready
 POST /api/jobs/{id}/nest
   -> nesting (nesting.py) -> analyze_nested (subprocesso) -> ready_for_params
+PUT  /api/jobs/{id}/layout  (mover/girar/escalar cópias; POST .../layout/reset)
+  -> relayout (analyze_nested de novo, params preservados) -> status anterior
 PUT  /api/jobs/{id}/params   (operations + assignments; stale=true se já gerou)
 POST /api/jobs/{id}/generate -> generating -> ready | failed
 GET  /api/jobs/{id}/file     -> job.rd
@@ -73,7 +75,12 @@ Invariantes que não podem quebrar:
   ordem de carregamento. `analyze_nested` e `generate` carregam as mesmas peças
   na mesma ordem para que `params.assignments` (elemento -> operação) continue
   válido. Qualquer mudança em peças, quantidade, rotação ou máquina passa por
-  `reset_nesting_state()` e zera `analysis`/`params`.
+  `reset_nesting_state()` e zera `analysis`/`params`. Mover, girar ou escalar
+  cópias no canvas (`PUT /layout`, status `relayout`) **não** muda ids e
+  preserva `params`: só redesenha o `preview.svg`.
+- **Placement é por centro**: `cx_mm/cy_mm` + `rotation_deg` + `scale`, aplicados
+  em `position_part_instance`; o front replica a mesma sequência para mostrar
+  a peça antes da reanálise. `x/y/width/height` são informativos.
 - **`assignments` manda, `source` é rótulo.** `build_operations()` cria os nós de
   operação a partir de `params.operations`; `assign_elements()` liga os elementos
   pelo mapa. Nunca recombine por layer/cor na geração.
@@ -120,7 +127,9 @@ Invariantes que não podem quebrar:
 Feito e validado: upload multi-arquivo, nesting por bounding box, operações por
 cor com seleção no canvas, zoom/pan, perfis de máquina editáveis, troca de
 máquina num job existente, modo âncora Ruida, painel em etapas, `.rd` validado
-contra RDWorks e frame conferido em máquina real.
+contra RDWorks e frame conferido em máquina real. Layout manual no canvas
+(mover/girar/escalar, caixa numérica, reset) validado no navegador e no motor,
+**não** em máquina.
 
 Em aberto (ver também "Limitações conhecidas" em `docs/SERVICE.md`):
 

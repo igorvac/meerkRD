@@ -2,6 +2,8 @@
 // currentColor. Replace the placeholder paths with the final icon set — names
 // are stable and referenced from app.js via icon("name").
 const ICONS = {
+  pointer: '<path d="M5 3l14 8-6 1.5L9.5 19z"/>',
+  move: '<path d="M12 2v20M2 12h20M12 2l-3 3m3-3 3 3M12 22l-3-3m3 3 3-3M2 12l3-3m-3 3 3 3M22 12l-3-3m3 3-3 3"/>',
   logo: '<path d="M4 18 8 6l4 8 4-8 4 12" stroke-width="1.75"/>',
   upload: '<path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
   file: '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/>',

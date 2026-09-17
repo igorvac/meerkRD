@@ -281,6 +281,44 @@ p { margin: 0; }
 /* Shapes without a hit clone (text, images) fall back to a box outline. */
 .svc-shape.selected:not(:has(+ .svc-hit)) { outline: 2px dashed var(--accent); outline-offset: 1px; }
 
+/* Manual layout (move mode): pieces are dragged as a whole, the selection is
+   drawn on its own layer with a frame, corner handles (uniform scale) and a
+   rotation handle; the piece box next to it takes exact numbers. */
+.canvas-viewport.mode-move { user-select: none; -webkit-user-select: none; }
+.canvas-viewport.mode-move .svc-inst { cursor: move; }
+.canvas-viewport.mode-move .svc-inst .svc-shape, .canvas-viewport.mode-move .svc-inst .svc-hit { cursor: move; }
+.canvas-viewport.mode-move .svc-hit.hover { stroke-opacity: 0.12; }
+.canvas-viewport.dragging, .canvas-viewport.dragging * { cursor: grabbing !important; }
+.layer.select { pointer-events: none; overflow: visible; }
+.layer.select .sel-piece { fill: none; stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
+.layer.select .sel-frame { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.layer.select .sel-stem { stroke: var(--accent); stroke-width: 1; }
+.layer.select .sel-handle { pointer-events: all; fill: var(--surface-0); stroke: var(--accent); stroke-width: 1.5; }
+.layer.select .sel-handle.rot { cursor: crosshair; }
+.layer.select .sel-handle.nw, .layer.select .sel-handle.se { cursor: nwse-resize; }
+.layer.select .sel-handle.ne, .layer.select .sel-handle.sw { cursor: nesw-resize; }
+.layer.select .sel-handle:hover { fill: var(--accent-subtle); }
+.marquee {
+  position: absolute; pointer-events: none; border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.layout-badges { top: auto; bottom: 64px; flex-wrap: wrap; max-width: 60%; }
+.piece-box {
+  position: absolute; z-index: 3; width: 300px; padding: var(--space-2) var(--space-3);
+  background: var(--surface-0); border: var(--border) solid var(--border-subtle);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow); font-size: var(--font-sm);
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.piece-box .pb-title { font-weight: var(--weight-semibold); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.piece-box .pb-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.piece-box .pb-label { color: var(--text-2); min-width: 38px; }
+.piece-box .pb-field { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); white-space: nowrap; }
+.piece-box .pb-field .control { width: 64px; height: 26px; padding: 0 6px; font-size: var(--font-sm); }
+.piece-box .pb-info { color: var(--text-3); font-size: var(--font-xs); }
+.piece-box .pb-actions { justify-content: space-between; }
+.canvas-nav .segmented.sm .seg-btn { height: 28px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; font-size: var(--font-sm); white-space: nowrap; }
+.canvas-nav .segmented.sm .seg-btn .icon { width: 14px; height: 14px; }
+
 /* ---------------------------------------------------------------------------
    Inspector
    --------------------------------------------------------------------------- */
